@@ -1,0 +1,23 @@
+name: Mirror to CodeBerg
+
+on:
+  push:
+    branches: [ main, master ] # Change this if your default branch is different
+
+jobs:
+  codeberg-mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required to fetch all branches and tags
+
+      - name: Mirror to CodeBerg
+        run: |
+          # Configure Git with a dummy user for the push
+          git config --global user.name "thenil3sh"
+          git config --global user.email "thenil3sh@noreply.codeberg.org"
+          
+          # Push to CodeBerg
+          git push --prune --force "https://token:${{ secrets.CODEBERG_TOKEN }}@codeberg.org/kosh-project/android-client.git" "refs/remotes/origin/*:refs/heads/*" "refs/tags/*:refs/tags/*"
