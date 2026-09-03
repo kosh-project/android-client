@@ -8,8 +8,8 @@
         <option name="externalProjectPath" value="$PROJECT_DIR$" />
         <option name="modules">
           <set>
-            <option value="$PROJECT_DIR$" />
-            <option value="$PROJECT_DIR$/app" />
+            <option value="/media/shared/ktProjects/kosh-client" />
+            <option value="/media/shared/ktProjects/kosh-client/app" />
           </set>
         </option>
       </GradleProjectSettings>
