@@ -9,16 +9,12 @@ plugins {
 
 android {
     namespace = "project.kosh.app"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "project.kosh.app"
-        minSdk = 33
-        targetSdk = 36
+        minSdk = 26
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0"
 
