@@ -23,5 +23,8 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "kosh"
-include(":app")
+include(":app-gallery")
+include(":core:model")
+include(":core:crypto")
+include(":core:network")
  
