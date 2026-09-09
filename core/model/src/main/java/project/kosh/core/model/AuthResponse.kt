@@ -1,3 +1,6 @@
 package project.kosh.core.model
 
-data class AuthResponse()
+
+data class AuthResponse(
+    val token: String,
+)

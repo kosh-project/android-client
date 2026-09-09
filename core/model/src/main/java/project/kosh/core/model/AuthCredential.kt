@@ -1,4 +1,6 @@
 package project.kosh.core.model
 
-class AuthCredential {
-}
+data class AuthCredential(
+    val identityHash: String,
+    val authVerifier: String,
+)

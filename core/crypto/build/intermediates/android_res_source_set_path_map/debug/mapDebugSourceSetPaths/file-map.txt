@@ -1,0 +1,9 @@
+project.kosh.core.crypto-pngs-0 /media/shared/ktProjects/kosh-client/core/crypto/build/generated/res/pngs/debug
+project.kosh.core.crypto-updated_navigation_xml-1 /media/shared/ktProjects/kosh-client/core/crypto/build/generated/updated_navigation_xml/debug
+project.kosh.core.crypto-mergeDebugResources-2 /media/shared/ktProjects/kosh-client/core/crypto/build/intermediates/incremental/debug/mergeDebugResources/merged.dir
+project.kosh.core.crypto-mergeDebugResources-3 /media/shared/ktProjects/kosh-client/core/crypto/build/intermediates/incremental/debug/mergeDebugResources/stripped.dir
+project.kosh.core.crypto-debug-4 /media/shared/ktProjects/kosh-client/core/crypto/build/intermediates/merged_res/debug/mergeDebugResources
+project.kosh.core.crypto-debug-5 /media/shared/ktProjects/kosh-client/core/crypto/build/intermediates/packaged_res/debug/packageDebugResources
+project.kosh.core.crypto-debug-6 /media/shared/ktProjects/kosh-client/core/crypto/src/debug/res
+project.kosh.core.crypto-main-7 /media/shared/ktProjects/kosh-client/core/crypto/src/main/res
+gradleHome-0 /media/shared/gradle
