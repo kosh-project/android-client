@@ -27,4 +27,5 @@ include(":app-gallery")
 include(":core:model")
 include(":core:crypto")
 include(":core:network")
- 
+include(":core:auth")
+include(":feature:auth")
