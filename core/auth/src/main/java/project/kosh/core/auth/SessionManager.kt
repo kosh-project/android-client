@@ -2,11 +2,13 @@ package project.kosh.core.auth
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.media.session.MediaSession
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.core.content.edit
 import dagger.hilt.android.qualifiers.ApplicationContext
+import project.kosh.core.network.TokenProvider
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -18,7 +20,7 @@ import javax.inject.Singleton
 @Singleton
 class SessionManager @Inject constructor(
     @ApplicationContext private val context: Context
-) {
+) : TokenProvider {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("session", Context.MODE_PRIVATE)
     private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -59,7 +61,7 @@ class SessionManager @Inject constructor(
         }
     }
 
-    fun getToken(): String? {
+    override fun getToken(): String? {
         val ivBase64 = prefs.getString("auth_iv", null) ?: return null
         val ciphertextBase64 = prefs.getString("auth_token_enc", null) ?: return null
 
