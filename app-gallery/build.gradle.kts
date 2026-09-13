@@ -43,6 +43,10 @@ dependencies {
 
     implementation(project(":core:crypto"))
     implementation(project(":core:model"))
+    implementation(project(":core:network"))
+    implementation(project(":core:auth"))
+
+    implementation(project(":feature:auth"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
@@ -63,6 +67,7 @@ dependencies {
     // Dependency Injection
     implementation(libs.dagger.hilt.android)
     ksp(libs.dagger.hilt.compiler)
+    ksp(libs.kotlin.metadata.jvm)
     implementation(libs.androidx.hilt.navigation.compose)
 
     // Room

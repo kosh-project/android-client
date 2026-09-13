@@ -11,9 +11,12 @@
             <option value="/media/shared/ktProjects/kosh-client" />
             <option value="/media/shared/ktProjects/kosh-client/app-gallery" />
             <option value="/media/shared/ktProjects/kosh-client/core" />
+            <option value="/media/shared/ktProjects/kosh-client/core/auth" />
             <option value="/media/shared/ktProjects/kosh-client/core/crypto" />
             <option value="/media/shared/ktProjects/kosh-client/core/model" />
             <option value="/media/shared/ktProjects/kosh-client/core/network" />
+            <option value="/media/shared/ktProjects/kosh-client/feature" />
+            <option value="/media/shared/ktProjects/kosh-client/feature/auth" />
           </set>
         </option>
       </GradleProjectSettings>
