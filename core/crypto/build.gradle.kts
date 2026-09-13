@@ -28,6 +28,7 @@ dependencies {
     // Hilt for Dependency Injection
     implementation(libs.dagger.hilt.android)
     ksp(libs.dagger.hilt.compiler)
+    ksp(libs.kotlin.metadata.jvm)
 
     // It depends on the model module
     implementation(project(":core:model"))

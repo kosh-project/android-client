@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "project.kosh.core.crypto"
+    namespace = "project.kosh.core.network"
     compileSdk = 37
 
     defaultConfig {
@@ -22,8 +22,10 @@ android {
 dependencies {
     implementation(libs.dagger.hilt.android)
     ksp(libs.dagger.hilt.compiler)
+    ksp(libs.kotlin.metadata.jvm)
     implementation(project(":core:model"))
 
     implementation(libs.squareup.okhttp)
+    implementation(libs.squareup.okhttp.logging.interceptor)
     implementation(libs.kotlinx.serialization.json)
 }

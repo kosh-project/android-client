@@ -12,12 +12,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class KoshAuthClient @Inject constructor(
-    private val client: OkHttpClient
+class AuthClient @Inject constructor(
+    @PublicOkHttpClient private val client: OkHttpClient
 ) {
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    private val baseUrl = "http://192.168.240.112:6969/api"
+    private val baseUrl = "http://192.168.240.1:6969/api"
 
     fun register(credential: AuthCredential): Boolean {
         val jsonBody = Json.encodeToString(credential)
