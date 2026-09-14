@@ -1,5 +1,7 @@
 package project.kosh.core.auth
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import project.kosh.core.model.AuthCredential
 import project.kosh.core.network.AuthClient
 import javax.inject.Inject
@@ -11,8 +13,8 @@ class AuthRepository @Inject constructor(
     private val sessionManager: SessionManager
 ) {
 
-    fun register(credential: AuthCredential): Boolean {
-        return try {
+    suspend fun register(credential: AuthCredential): Boolean = withContext(Dispatchers.IO) {
+        try {
             authClient.register(credential)
         } catch (e: Exception) {
             false
@@ -20,8 +22,8 @@ class AuthRepository @Inject constructor(
     }
 
 
-    fun login(credential: AuthCredential): Boolean {
-        return try {
+    suspend fun login(credential: AuthCredential): Boolean = withContext(Dispatchers.IO) {
+        try {
             val token = authClient.login(credential)
             if (token != null) {
                 sessionManager.saveToken(token)

@@ -23,7 +23,7 @@ class AuthViewModel @Inject constructor(
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
 
     fun login(username: String, passphrase: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        viewModelScope.launch {
             _state.value = AuthUiState.Loading
 
             try {
