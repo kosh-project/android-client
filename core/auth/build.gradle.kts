@@ -24,4 +24,11 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(project(":core:model"))
     implementation(project(":core:network"))
+
+
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.androidx.test.core.ktx)
 }

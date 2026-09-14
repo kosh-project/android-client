@@ -32,4 +32,10 @@ dependencies {
 
     // It depends on the model module
     implementation(project(":core:model"))
+
+    testImplementation(libs.junit)
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.espresso.core)
+    androidTestImplementation(libs.androidx.test.core.ktx)
 }

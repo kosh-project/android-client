@@ -36,4 +36,9 @@ dependencies {
     implementation(libs.dagger.hilt.android)
     ksp(libs.dagger.hilt.compiler)
     ksp(libs.kotlin.metadata.jvm)
+
+
+    testImplementation(libs.junit)
+    testImplementation(libs.io.mockk)
+    testImplementation(libs.org.jetbrains.kotlinx.coroutines.test)
 }
