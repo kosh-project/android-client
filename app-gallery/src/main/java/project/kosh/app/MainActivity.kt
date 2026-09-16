@@ -35,17 +35,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        val startDestination = if (authRepo.isLoggedIn()) "gallery" else "auth"
+
         enableEdgeToEdge()
         setContent {
             KoshTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(innerPadding),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        AuthScreen {  }
+                    Box(Modifier.padding(innerPadding)) {
+                        AppRouter(startDestination)
                     }
                 }
             }

@@ -47,6 +47,7 @@ dependencies {
     implementation(project(":core:auth"))
 
     implementation(project(":feature:auth"))
+    implementation(project(":feature:gallery"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
