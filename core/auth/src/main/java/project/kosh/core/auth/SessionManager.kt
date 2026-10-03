@@ -80,4 +80,11 @@ class SessionManager @Inject constructor(
             null
         }
     }
+
+    fun clearToken() {
+        prefs.edit() {
+            remove("auth_iv")
+            remove("auth_token_enc")
+        }
+    }
 }
