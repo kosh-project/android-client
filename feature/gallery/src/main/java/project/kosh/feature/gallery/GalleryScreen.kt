@@ -20,6 +20,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 
+/**
+ * Primary Jetpack Compose screen providing media selection and CAS upload capabilities.
+ *
+ * Utilizes the modern AndroidX photo picker contract ([ActivityResultContracts.PickVisualMedia])
+ * to grant scoped read access to individual user-selected images without requiring broad storage
+ * runtime permissions (`READ_EXTERNAL_STORAGE` or `READ_MEDIA_IMAGES`).
+ *
+ * Upon media selection, passes the content URI to [GalleryViewModel.uploadPhoto] to trigger
+ * zero-copy streaming upload to the remote Kosh storage vault.
+ *
+ * @param viewModel The Hilt-backed [GalleryViewModel] managing upload state and network transfer.
+ */
 @Composable
 fun GalleryScreen(
     viewModel: GalleryViewModel = hiltViewModel()

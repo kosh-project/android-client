@@ -17,6 +17,26 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Hardware-backed secure session storage service implementing [TokenProvider].
+ *
+ * Persists the 118-byte structured bearer token issued by the Kosh server using authenticated
+ * AES-256-GCM encryption backed by the AndroidKeyStore provider.
+ *
+ * ### Hardware Security & Key Isolation
+ * The master encryption key is generated directly within the device's Trusted Execution Environment
+ * (TEE) or Secure Element via [AndroidKeyStore]. Key material is non-exportable and never enters
+ * the Android application memory space in unencrypted form.
+ *
+ * ### Cryptographic Pipeline
+ * - **Algorithm:** AES-256 in Galois/Counter Mode (`AES/GCM/NoPadding`).
+ * - **Initialization Vector (IV):** Generated dynamically by the cipher provider for every encryption
+ *   call to guarantee nonce uniqueness and prevent replay or differential cryptanalysis.
+ * - **Integrity Tag:** 128-bit GCM authentication tag verifying ciphertext integrity against tampering.
+ * - **Persistence:** Stored in private [SharedPreferences] encoded as Base64 strings.
+ *
+ * @param context Android application context used to access private shared preferences.
+ */
 @Singleton
 class SessionManager @Inject constructor(
     @ApplicationContext private val context: Context
@@ -44,10 +64,23 @@ class SessionManager @Inject constructor(
         }
     }
 
+    /**
+     * Resolves the hardware-backed [SecretKey] from the AndroidKeyStore.
+     *
+     * @return The 256-bit AES master key reference.
+     */
     private fun getSecretKey(): SecretKey {
         return keyStore.getKey(keyAlias, null) as SecretKey
     }
 
+    /**
+     * Encrypts and persists the given bearer [token] in hardware-encrypted storage.
+     *
+     * Generates a fresh random IV, encrypts the token bytes using AES-256-GCM, and stores
+     * both the IV and ciphertext as Base64 strings in shared preferences.
+     *
+     * @param token The raw 118-byte composite bearer token issued by the server.
+     */
     fun saveToken(token: String) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
@@ -61,6 +94,15 @@ class SessionManager @Inject constructor(
         }
     }
 
+    /**
+     * Decrypts and retrieves the active session token from secure storage.
+     *
+     * Reads the Base64-encoded IV and ciphertext, initializes an AES-256-GCM cipher with
+     * the hardware-backed key, and decrypts the payload. If the ciphertext has been altered,
+     * the GCM tag verification will fail and return `null`.
+     *
+     * @return The decrypted bearer token string, or `null` if no token is saved or decryption fails.
+     */
     override fun getToken(): String? {
         val ivBase64 = prefs.getString("auth_iv", null) ?: return null
         val ciphertextBase64 = prefs.getString("auth_token_enc", null) ?: return null
@@ -81,6 +123,13 @@ class SessionManager @Inject constructor(
         }
     }
 
+    /**
+     * Clears all stored session credentials from local storage.
+     *
+     * Invoked during user logout or when the server responds with HTTP 401 Unauthorized
+     * (e.g. token expiration or server reboot with rotated signing secret) to prevent
+     * infinite 401 retry loops.
+     */
     fun clearToken() {
         prefs.edit() {
             remove("auth_iv")
