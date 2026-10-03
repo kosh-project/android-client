@@ -25,14 +25,37 @@ import project.kosh.core.crypto.IdentityManager
 import project.kosh.feature.auth.AuthScreen
 import javax.inject.Inject
 
+/**
+ * Single Activity entry point for the Kosh Android application.
+ *
+ * Annotated with [AndroidEntryPoint] to enable dependency injection into the activity context.
+ * Responsible for inspecting the device's authentication state on launch and initializing
+ * Jetpack Compose UI with edge-to-edge system bar integration.
+ */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    /**
+     * Injected cryptographic identity manager.
+     */
     @Inject
     lateinit var identityManager: IdentityManager
+
+    /**
+     * Injected authentication repository used to verify session persistence on startup.
+     */
     @Inject
     lateinit var authRepo: AuthRepository
 
+    /**
+     * Activity initialization lifecycle callback.
+     *
+     * Queries [AuthRepository.isLoggedIn] to determine the initial navigation destination:
+     * - `"gallery"` if an active session token is present.
+     * - `"auth"` if unauthenticated or session has expired.
+     *
+     * @param savedInstanceState Persisted instance state bundle, if recreating after configuration change.
+     */
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -51,6 +74,12 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+/**
+ * Preview and greeting composable demonstration.
+ *
+ * @param name The subject name to greet.
+ * @param modifier Composable modifier for layout adjustment.
+ */
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {
     Text(
@@ -59,6 +88,9 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
     )
 }
 
+/**
+ * Compose preview rendering the [Greeting] composable inside [KoshTheme].
+ */
 @Preview(showBackground = true)
 @Composable
 fun GreetingPreview() {
