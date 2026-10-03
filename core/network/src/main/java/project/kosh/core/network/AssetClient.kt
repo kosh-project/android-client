@@ -40,25 +40,24 @@ class AssetClient @Inject constructor(
                 if (response.isSuccessful) {
                     NetworkResult.Success(bodyText)
                 } else {
-                    val errBody = response.body.string()
-                    NetworkResult.HttpError(response.code, bodyText)
+                    NetworkResult.fromHttp(response.code, bodyText)
                 }
             }
         } catch (e: Exception) {
-            NetworkResult.NetworkError(e)
+            NetworkResult.fromThrowable(e)
         }
     }
 
     fun downloadAsset(hash: String, tag: AssetTag, cacheDir: File): NetworkResult<File> {
         val request = Request.Builder()
-            .url("$baseUrl/asset/$hash")
+            .url("$baseUrl/assets/$hash")
             .get()
             .build()
 
         return try {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    return NetworkResult.HttpError(response.code, response.body.string())
+                    return NetworkResult.fromHttp(response.code, response.body.string())
                 }
                 val downloadFile = File(cacheDir, "restored_$hash.jpg")
                 response.body.byteStream().use { inputStream ->
@@ -70,7 +69,7 @@ class AssetClient @Inject constructor(
                 NetworkResult.Success(downloadFile)
             }
         } catch (e : Exception) {
-            NetworkResult.NetworkError(e)
+            NetworkResult.fromThrowable(e)
         }
     }
 }
