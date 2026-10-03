@@ -31,14 +31,14 @@ object NetworkModule {
         authInterceptor: AuthInterceptor
     ): OkHttpClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = HttpLoggingInterceptor.Level.HEADERS
         }
 
         return OkHttpClient.Builder()
             .addInterceptor(loggingInterceptor)
-            .addInterceptor(authInterceptor)
-            .connectTimeout(10, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
             .build()
     }
 

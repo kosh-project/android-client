@@ -24,6 +24,7 @@ dependencies {
     implementation(libs.androidx.security.crypto)
     implementation(project(":core:model"))
     implementation(project(":core:network"))
+    implementation(project(":core:crypto"))
 
 
     testImplementation(libs.junit)

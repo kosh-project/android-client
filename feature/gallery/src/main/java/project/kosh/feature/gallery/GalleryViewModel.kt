@@ -37,8 +37,8 @@ class GalleryViewModel  @Inject constructor(
 
             _uploadStatus.value = when (result) {
                 is NetworkResult.Success -> "Success: 201 Created!"
-                is NetworkResult.HttpError -> "Server Error ${result.code} - ${result.serverMessage}"
-                is NetworkResult.NetworkError -> "Network Failure - ${result.exception.message}"
+                is NetworkResult.Http -> "Server Error ${result.code} - ${result.serverMessage}"
+                is NetworkResult.Failure -> "Network Failure - ${result.userMessage}"
             }
         }
     }
