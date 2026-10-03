@@ -27,6 +27,18 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 
+/**
+ * Primary Jetpack Compose screen for user authentication and account registration.
+ *
+ * Implements Unidirectional Data Flow (UDF) by collecting the active [AuthUiState]
+ * from [AuthViewModel.state] and dispatching user actions back to the ViewModel.
+ *
+ * Monitors state transitions via a [LaunchedEffect]: when authentication succeeds
+ * ([AuthUiState.Success]), invokes [onAuthSuccess] to transition navigation to the main app destination.
+ *
+ * @param viewModel The Hilt-backed [AuthViewModel] managing authentication logic.
+ * @param onAuthSuccess Navigation callback triggered when authentication completes successfully.
+ */
 @Composable
 fun AuthScreen(
     viewModel: AuthViewModel = hiltViewModel(),
@@ -87,6 +99,15 @@ fun AuthScreen(
     }
 }
 
+/**
+ * Renders the Login and Register action button controls.
+ *
+ * Buttons are enabled only when both [username] and [pass] contain non-blank text.
+ *
+ * @param viewModel The [AuthViewModel] receiving button click events.
+ * @param username Current text entered in the username field.
+ * @param pass Current text entered in the passphrase field.
+ */
 @Composable
 fun AuthButtons(
     viewModel: AuthViewModel,

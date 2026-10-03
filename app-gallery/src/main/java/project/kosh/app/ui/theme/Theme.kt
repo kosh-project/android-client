@@ -11,12 +11,18 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
+/**
+ * Default dark theme color scheme for Material 3.
+ */
 private val DarkColorScheme = darkColorScheme(
     primary = Purple80,
     secondary = PurpleGrey80,
     tertiary = Pink80
 )
 
+/**
+ * Default light theme color scheme for Material 3.
+ */
 private val LightColorScheme = lightColorScheme(
     primary = Purple40,
     secondary = PurpleGrey40,
@@ -33,6 +39,16 @@ private val LightColorScheme = lightColorScheme(
     */
 )
 
+/**
+ * Application Material 3 theme configuration.
+ *
+ * Supports dynamic color theming on Android 12 (API level 31) and higher, falling back
+ * to custom dark and light color schemes on older platform versions.
+ *
+ * @param darkTheme Whether to apply dark color palette defaults.
+ * @param dynamicColor Whether to enable dynamic color theming on Android 12+.
+ * @param content The composable hierarchy to render within the theme scope.
+ */
 @Composable
 fun KoshTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),

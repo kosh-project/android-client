@@ -15,6 +15,17 @@ import project.kosh.core.model.NetworkResult
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Low-level HTTP network client managing authentication and challenge endpoints.
+ *
+ * This client communicates with the public `/api/auth` routes on the Kosh Axum server.
+ * It is configured with [PublicOkHttpClient] to ensure that requests are made without
+ * an `Authorization` header, preventing interference with the server's ingress rate governors.
+ *
+ * All operations execute within [Dispatchers.IO] and return classified [NetworkResult] instances.
+ *
+ * @param client The unauthenticated OkHttp client instance.
+ */
 @Singleton
 class AuthClient @Inject constructor(
     @PublicOkHttpClient private val client: OkHttpClient
@@ -25,6 +36,16 @@ class AuthClient @Inject constructor(
     // TODO: Ugly url, we'll replace it later
     private val baseUrl = "http://192.168.240.1:23342/api"
 
+    /**
+     * Requests a dynamic, stateless Proof-of-Work challenge from the backend server.
+     *
+     * Issues an HTTP GET request to `/api/auth/challenge?action={action}`.
+     * The returned challenge has a strict 15-second time-to-live (TTL) on the backend.
+     *
+     * @param action The intended authentication action (`"login"` or `"register"`).
+     * @return [NetworkResult.Success] containing [ChallengeResponse] if retrieved,
+     *   or [NetworkResult.Failure] describing the error.
+     */
     suspend fun fetchChallenge(action: String): NetworkResult<ChallengeResponse> =
         withContext(Dispatchers.IO) {
             val request = Request.Builder()
@@ -47,6 +68,18 @@ class AuthClient @Inject constructor(
             }
         }
 
+    /**
+     * Registers a new user account with the backend server.
+     *
+     * Transmits an HTTP POST request to `/api/auth/register` with:
+     * - `X-Hashcash`: The 168-byte Proof-of-Work solution header containing the identity hash and nonce.
+     * - Body: JSON-encoded [AuthRequest] containing the user's derived Argon2id `auth_verifier`.
+     *
+     * @param requestDto The DTO carrying the Argon2id verifier.
+     * @param hashcashHeader The solved 168-byte Hashcash header string.
+     * @return [NetworkResult.Success] containing [Unit] on successful registration,
+     *   or [NetworkResult.Failure] (such as [NetworkResult.Http.Conflict] if already registered).
+     */
     suspend fun register(requestDto: AuthRequest, hashcashHeader: String): NetworkResult<Unit> =
         withContext(
             Dispatchers.IO
@@ -74,6 +107,21 @@ class AuthClient @Inject constructor(
             }
         }
 
+    /**
+     * Authenticates an existing user account and retrieves a session token.
+     *
+     * Transmits an HTTP POST request to `/api/auth/login` with:
+     * - `X-Hashcash`: The 165-byte Proof-of-Work solution header.
+     * - Body: JSON-encoded [AuthRequest] containing the Argon2id `auth_verifier`.
+     *
+     * On success, the server responds with a 118-byte composite bearer token
+     * (`<session_id>.<expires_at_hex>.<blake3_mac>`).
+     *
+     * @param requestDto The DTO carrying the Argon2id verifier.
+     * @param hashcashHeader The solved 165-byte Hashcash header string.
+     * @return [NetworkResult.Success] containing the 118-byte bearer token string,
+     *   or [NetworkResult.Failure] if credentials or challenge are invalid.
+     */
     suspend fun login(requestDto: AuthRequest, hashcashHeader: String): NetworkResult<String> = withContext(
         Dispatchers.IO
     ) {
