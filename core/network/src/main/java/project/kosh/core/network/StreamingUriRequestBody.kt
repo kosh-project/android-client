@@ -8,6 +8,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody
 import okio.BufferedSink
 import kotlin.also
+import kotlin.math.exp
 
 /**
  * Custom OkHttp [RequestBody] providing zero-copy streaming of binary assets directly
@@ -33,7 +34,8 @@ import kotlin.also
  */
 class StreamingUriRequestBody(
     private val contentResolver: ContentResolver,
-    private val uri: Uri
+    private val uri: Uri,
+    private val explicitLength: Long? = null
 ) : RequestBody() {
 
     /**
@@ -52,6 +54,7 @@ class StreamingUriRequestBody(
      * @return The file size in bytes, or `-1L` if the size cannot be determined by the system provider.
      */
     override fun contentLength(): Long {
+        if (explicitLength != null && explicitLength >= 0L) return explicitLength
         contentResolver
             .query(uri, null, null, null)?.use { cursor ->
                 val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)

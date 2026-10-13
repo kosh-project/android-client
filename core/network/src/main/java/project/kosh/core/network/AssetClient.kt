@@ -1,14 +1,20 @@
 package project.kosh.core.network
 
-import android.R
 import android.content.ContentResolver
+import android.net.Network
 import android.net.Uri
-import okhttp3.MediaType.Companion.toMediaType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import okhttp3.Dispatcher
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
+import project.kosh.core.model.AssetCursor
+import project.kosh.core.model.AssetPage
 import project.kosh.core.model.AssetTag
 import project.kosh.core.model.NetworkResult
+import project.kosh.core.model.UploadResponse
 import java.io.File
 import java.io.FileOutputStream
 import javax.inject.Inject
@@ -30,6 +36,7 @@ import javax.inject.Singleton
 class AssetClient @Inject constructor(
     @AuthOkHttpClient private val client: OkHttpClient
 ) {
+    private val json = Json { ignoreUnknownKeys = true }
     private val baseUrl = "http://192.168.240.1:6969/api/v1"
 
     /**
@@ -46,12 +53,12 @@ class AssetClient @Inject constructor(
      * @return [NetworkResult.Success] containing the response string on successful upload,
      *   or [NetworkResult.Failure] describing the error.
      */
-    fun uploadAsset(
+    suspend fun uploadAsset(
         contentResolver: ContentResolver,
         uri : Uri,
         tag: AssetTag,
         originalFileName: String
-    ): NetworkResult<String> {
+    ): NetworkResult<String> = withContext(Dispatchers.IO) {
         val requestBody = StreamingUriRequestBody(contentResolver, uri)
 
         val request = Request.Builder()
@@ -60,14 +67,21 @@ class AssetClient @Inject constructor(
             .post(requestBody)
             .build()
 
-        return try {
+        try {
             client.newCall(request).execute().use { response ->
                 val bodyText = response.body.string()
-                if (response.isSuccessful) {
-                    NetworkResult.Success(bodyText)
-                } else {
-                    NetworkResult.fromHttp(response.code, bodyText)
+                if (!response.isSuccessful) {
+                    return@use NetworkResult.fromHttp(response.code, bodyText)
                 }
+
+                val uploadResponse = json.decodeFromString<UploadResponse>(bodyText)
+                val hash = uploadResponse.hash
+
+                if (!uploadResponse.isSuccess || hash == null) {
+                    return@use NetworkResult.fromHttp(500, bodyText)
+                }
+
+                NetworkResult.Success(hash)
             }
         } catch (e: Exception) {
             NetworkResult.fromThrowable(e)
@@ -86,28 +100,91 @@ class AssetClient @Inject constructor(
      * @return [NetworkResult.Success] containing the downloaded [File],
      *   or [NetworkResult.Failure] if the asset cannot be retrieved.
      */
-    fun downloadAsset(hash: String, tag: AssetTag, cacheDir: File): NetworkResult<File> {
+    suspend fun downloadAsset(
+        hash: String,
+        destinationFile: File
+    ): NetworkResult<File> = withContext(Dispatchers.IO){
         val request = Request.Builder()
             .url("$baseUrl/assets/$hash")
             .get()
             .build()
 
-        return try {
+        try {
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    return NetworkResult.fromHttp(response.code, response.body.string())
+                    return@use NetworkResult.fromHttp(response.code, response.body.string())
                 }
-                val downloadFile = File(cacheDir, "restored_$hash.jpg")
+
                 response.body.byteStream().use { inputStream ->
-                    FileOutputStream(downloadFile).use { outputStream ->
-                        inputStream.copyTo(outputStream)
+                    FileOutputStream(destinationFile).use { outputStream ->
+                        inputStream.copyTo(outputStream, 64 * 1024)
                     }
                 }
 
-                NetworkResult.Success(downloadFile)
+                NetworkResult.Success(destinationFile)
+            }
+        } catch (e : Exception) {
+            NetworkResult.fromThrowable(e)
+        }
+    }
+    suspend fun listAssets(
+        tag: AssetTag,
+        limit: Int = 50,
+        cursor: AssetCursor? = null
+    ): NetworkResult<AssetPage> = withContext(Dispatchers.IO) {
+        val urlBuilder = "$baseUrl/assets".toHttpUrl()
+            .newBuilder()
+            .addQueryParameter("tag", tag.id.toString())
+            .addQueryParameter("limit", limit.toString())
+
+        if (cursor != null) {
+            urlBuilder
+                .addQueryParameter("before_time", cursor.beforeTime.toString())
+                .addQueryParameter("before_id", cursor.beforeId)
+        }
+
+        val request = Request.Builder()
+            .url(urlBuilder.build())
+            .get()
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                val bodyText = response.body.string()
+                if (!response.isSuccessful) {
+                    return@use NetworkResult.fromHttp(response.code, bodyText)
+                }
+
+                val page = json.decodeFromString<AssetPage>(bodyText)
+                NetworkResult.Success(page)
+            }
+        } catch (e : Exception) {
+            NetworkResult.fromThrowable(e)
+        }
+    }
+
+    suspend fun deleteAsset(
+        hash: String
+    ) : NetworkResult<Unit> = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url("$baseUrl/assets/$hash")
+            .delete()
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@use NetworkResult.fromHttp(response.code, response.body.string())
+                }
+
+                NetworkResult.Success(Unit)
             }
         } catch (e : Exception) {
             NetworkResult.fromThrowable(e)
         }
     }
 }
+
+
+
+
