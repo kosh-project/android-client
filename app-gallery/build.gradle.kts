@@ -45,6 +45,7 @@ dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:network"))
     implementation(project(":core:auth"))
+    implementation(project(":core:database"))
 
     implementation(project(":feature:auth"))
     implementation(project(":feature:gallery"))
