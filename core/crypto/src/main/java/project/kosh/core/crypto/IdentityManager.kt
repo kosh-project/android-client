@@ -3,6 +3,7 @@ package project.kosh.core.crypto
 import com.lambdapioneer.argon2kt.Argon2Kt
 import com.lambdapioneer.argon2kt.Argon2Mode
 import project.kosh.core.model.AuthCredential
+import java.nio.charset.Charset
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -93,5 +94,22 @@ class IdentityManager @Inject constructor() {
         )
 
         return result.encodedOutputAsString()
+    }
+
+    fun deriveKek(passphrase: String): ByteArray {
+        val passBytes = passphrase.toByteArray(Charsets.UTF_8)
+        val kekSalt = "kosh_vault".toByteArray(Charsets.UTF_8)
+
+        val result = argon2.hash(
+            mode = Argon2Mode.ARGON2_ID,
+            password = passBytes,
+            salt = kekSalt,
+            tCostInIterations = 3,
+            mCostInKibibyte = 65536,
+            parallelism = 1,
+            hashLengthInBytes = 32
+        )
+
+        return result.rawHashAsByteArray()
     }
 }
