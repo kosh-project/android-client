@@ -17,7 +17,18 @@ import kotlinx.serialization.Serializable
  *   Argon2 encoded string format (`$argon2id$v=19$m=65536,t=3,p=1$...`).
  */
 @Serializable
-data class AuthRequest(
+data class RegisterRequest(
+    @SerialName("auth_verifier")
+    val authVerifier: String,
+    @SerialName("wrapped_vault_key")
+    val wrappedVaultKey: String,
+)
+
+
+@Serializable
+data class LoginRequest(
     @SerialName("auth_verifier")
     val authVerifier: String
 )
+
+typealias AuthRequest = LoginRequest

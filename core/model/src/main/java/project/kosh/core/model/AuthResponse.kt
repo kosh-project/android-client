@@ -1,5 +1,6 @@
 package project.kosh.core.model
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 
@@ -25,4 +26,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class AuthResponse(
     val token: String,
+
+    @SerialName("wrapped_vault_key")
+    val wrappedVaultKey: String
 )
