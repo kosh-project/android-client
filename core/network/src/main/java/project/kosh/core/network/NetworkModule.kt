@@ -11,6 +11,9 @@ import javax.inject.Qualifier
 import javax.inject.Singleton
 
 
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+
 /**
  * Dagger/Hilt qualifier identifying the unauthenticated [OkHttpClient] instance.
  *
@@ -42,6 +45,12 @@ annotation class AuthOkHttpClient
  * 2. **Authenticated Client ([AuthOkHttpClient]):** Inherits socket pools and TLS settings from the public
  *    client but layers on [AuthInterceptor] to inject the 118-byte bearer token for vault transactions.
  *
+ * ### Transport Security & Dynamic Routing
+ * OkHttp instances are configured with:
+ * - [DynamicHostInterceptor] to rewrite outgoing requests to the active host, port, and scheme from [ServerConfigurationStore].
+ * - [KoshPinnedTrustManager] via [SSLSocketFactory] to pin the server's self-signed X.509 certificate SHA-256 fingerprint.
+ * - Permissive hostname verifier to support self-signed certificates bound to RFC 1918 private LAN IP addresses.
+ *
  * ### Hardware Realities & Heap Protection
  * The logging interceptor is explicitly configured with [HttpLoggingInterceptor.Level.HEADERS].
  * Setting this to `Level.BODY` is strictly forbidden because it forces OkHttp to buffer entire request and
@@ -55,22 +64,32 @@ object NetworkModule {
     /**
      * Provides the singleton unauthenticated [OkHttpClient].
      *
-     * Configured with header-only logging, 15-second connect timeout, and 30-second read/write timeouts.
+     * Configured with dynamic endpoint routing, TOFU certificate pinning, 15-second connect timeout,
+     * and 30-second read/write timeouts.
      *
-     * @param authInterceptor Injected dependency available in the Hilt graph.
+     * @param dynamicHostInterceptor Interceptor dynamically rewriting requests to the active server endpoint.
+     * @param trustManager Custom X509TrustManager validating peer leaf certificates against pinned fingerprints.
      * @return The configured base [OkHttpClient].
      */
     @Provides
     @Singleton
     @PublicOkHttpClient
     fun provideOkHttpClient(
-        authInterceptor: AuthInterceptor
+        dynamicHostInterceptor: DynamicHostInterceptor,
+        trustManager: KoshPinnedTrustManager
     ): OkHttpClient {
         val loggingInterceptor = HttpLoggingInterceptor().apply {
             level = HttpLoggingInterceptor.Level.HEADERS
         }
 
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, arrayOf<TrustManager>(trustManager), null)
+
         return OkHttpClient.Builder()
+            .dns(KoshDns)
+            .sslSocketFactory(sslContext.socketFactory, trustManager)
+            .hostnameVerifier { _, _ -> true }
+            .addInterceptor(dynamicHostInterceptor)
             .addInterceptor(loggingInterceptor)
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)

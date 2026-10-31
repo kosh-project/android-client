@@ -12,31 +12,63 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
 /**
- * Default dark theme color scheme for Material 3.
+ * Modern dark theme color scheme for Kosh Material 3.
  */
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+    primary = KoshPrimaryDark,
+    onPrimary = KoshOnPrimaryDark,
+    primaryContainer = KoshPrimaryContainerDark,
+    onPrimaryContainer = KoshOnPrimaryContainerDark,
+    secondary = KoshSecondaryDark,
+    onSecondary = KoshOnSecondaryDark,
+    secondaryContainer = KoshSecondaryContainerDark,
+    onSecondaryContainer = KoshOnSecondaryContainerDark,
+    tertiary = KoshTertiaryDark,
+    onTertiary = KoshOnTertiaryDark,
+    tertiaryContainer = KoshTertiaryContainerDark,
+    onTertiaryContainer = KoshOnTertiaryContainerDark,
+    background = KoshBackgroundDark,
+    onBackground = KoshOnBackgroundDark,
+    surface = KoshSurfaceDark,
+    onSurface = KoshOnSurfaceDark,
+    surfaceVariant = KoshSurfaceVariantDark,
+    onSurfaceVariant = KoshOnSurfaceVariantDark,
+    outline = KoshOutlineDark,
+    outlineVariant = KoshOutlineVariantDark,
+    error = KoshErrorDark,
+    onError = KoshOnErrorDark,
+    errorContainer = KoshErrorContainerDark,
+    onErrorContainer = KoshOnErrorContainerDark
 )
 
 /**
- * Default light theme color scheme for Material 3.
+ * Modern light theme color scheme for Kosh Material 3.
  */
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
-    onPrimary = Color.White,
-    onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    primary = KoshPrimaryLight,
+    onPrimary = KoshOnPrimaryLight,
+    primaryContainer = KoshPrimaryContainerLight,
+    onPrimaryContainer = KoshOnPrimaryContainerLight,
+    secondary = KoshSecondaryLight,
+    onSecondary = KoshOnSecondaryLight,
+    secondaryContainer = KoshSecondaryContainerLight,
+    onSecondaryContainer = KoshOnSecondaryContainerLight,
+    tertiary = KoshTertiaryLight,
+    onTertiary = KoshOnTertiaryLight,
+    tertiaryContainer = KoshTertiaryContainerLight,
+    onTertiaryContainer = KoshOnTertiaryContainerLight,
+    background = KoshBackgroundLight,
+    onBackground = KoshOnBackgroundLight,
+    surface = KoshSurfaceLight,
+    onSurface = KoshOnSurfaceLight,
+    surfaceVariant = KoshSurfaceVariantLight,
+    onSurfaceVariant = KoshOnSurfaceVariantLight,
+    outline = KoshOutlineLight,
+    outlineVariant = KoshOutlineVariantLight,
+    error = KoshErrorLight,
+    onError = KoshOnErrorLight,
+    errorContainer = KoshErrorContainerLight,
+    onErrorContainer = KoshOnErrorContainerLight
 )
 
 /**
@@ -52,7 +84,6 @@ private val LightColorScheme = lightColorScheme(
 @Composable
 fun KoshTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // Dynamic color is available on Android 12+
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit
 ) {
@@ -61,7 +92,6 @@ fun KoshTheme(
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-
         darkTheme -> DarkColorScheme
         else -> LightColorScheme
     }

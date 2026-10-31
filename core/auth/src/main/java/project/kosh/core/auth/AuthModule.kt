@@ -1,16 +1,21 @@
 package project.kosh.core.auth
 
+import android.content.Context
+import androidx.credentials.CredentialManager
 import dagger.Binds
 import dagger.Module
+import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import project.kosh.core.network.TokenProvider
+import javax.inject.Singleton
 
 /**
  * Dagger Hilt dependency injection module configuring authentication layer bindings.
  *
  * Exposes internal auth implementations across architectural boundaries, binding
- * [SessionManager] to the abstract [TokenProvider] interface.
+ * [SessionManager] to the abstract [TokenProvider] interface and providing [CredentialManager].
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -29,4 +34,15 @@ abstract class AuthModule {
     abstract fun bindTokenProvider(
         sessionManager: SessionManager
     ): TokenProvider
+
+    companion object {
+        /**
+         * Provides the singleton Android [CredentialManager] instance.
+         */
+        @Provides
+        @Singleton
+        fun provideCredentialManager(
+            @ApplicationContext context: Context
+        ): CredentialManager = CredentialManager.create(context)
+    }
 }

@@ -1,10 +1,15 @@
 package project.kosh.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -47,30 +52,62 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var authRepo: AuthRepository
 
-    /**
-     * Activity initialization lifecycle callback.
-     *
-     * Queries [AuthRepository.isLoggedIn] to determine the initial navigation destination:
-     * - `"gallery"` if an active session token is present.
-     * - `"auth"` if unauthenticated or session has expired.
-     *
-     * @param savedInstanceState Persisted instance state bundle, if recreating after configuration change.
-     */
+    @Inject
+    lateinit var serverConfigStore: project.kosh.core.network.ServerConfigurationStore
+
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        for ((permission, isGranted) in permissions) {
+            Log.d(TAG, "Permission $permission granted=$isGranted")
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val startDestination = if (authRepo.isLoggedIn()) "gallery" else "auth"
+        requestNetworkPermissions()
+
+        val isServerVerified = serverConfigStore.hasConfiguredHost() &&
+                (!serverConfigStore.isTlsEnabled() || serverConfigStore.getPinnedFingerprint() != null)
+
+        val startDestination = when {
+            authRepo.isLoggedIn() -> "gallery"
+            isServerVerified -> "auth"
+            else -> "server_setup"
+        }
 
         enableEdgeToEdge()
         setContent {
             KoshTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Box(Modifier.padding(innerPadding)) {
-                        AppRouter(startDestination)
-                    }
+                androidx.compose.material3.Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.background
+                ) {
+                    AppRouter(startDestination)
                 }
             }
         }
+    }
+
+    private fun requestNetworkPermissions() {
+        val permissions = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+        }
+        val accessLocalNetwork = "android.permission.ACCESS_LOCAL_NETWORK"
+        if (ContextCompat.checkSelfPermission(this, accessLocalNetwork) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(accessLocalNetwork)
+        }
+        if (permissions.isNotEmpty()) {
+            permissionLauncher.launch(permissions.toTypedArray())
+        }
+    }
+
+    companion object {
+        private const val TAG = "MainActivity"
     }
 }
 
