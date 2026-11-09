@@ -20,7 +20,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -37,6 +40,9 @@ dependencies {
     ksp(libs.kotlin.metadata.jvm)
 
     testImplementation(libs.junit)
+    testImplementation(libs.org.jetbrains.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.test.core.ktx)
+    testImplementation("org.robolectric:robolectric:4.14.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
 }
