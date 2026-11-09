@@ -99,10 +99,18 @@ object Bip39Sas {
      * @return Ordered list of recognized word tokens.
      */
     fun extractWords(phrase: String): List<String> {
-        return phrase.trim()
+        val sanitized = phrase
+            .replace("[\\u200B-\\u200D\\uFEFF\\u00A0\\u1680\\u2000-\\u200A\\u202F\\u205F\\u3000]".toRegex(), " ")
+            .trim()
             .lowercase()
-            .split("[\\s,;]+".toRegex())
-            .map { it.replace("^\\d+[.:)\\s-]*".toRegex(), "").replace("[^a-z]".toRegex(), "") }
+
+        return sanitized
+            .split("[\\s,;|\n\r\t]+".toRegex())
+            .map { token ->
+                token.replace("^\\[?\\d+\\]?[.:)\\s-]*".toRegex(), "")
+                    .replace("^#\\d+[.:)\\s-]*".toRegex(), "")
+                    .replace("[^a-z]".toRegex(), "")
+            }
             .filter { it.isNotEmpty() }
     }
 
