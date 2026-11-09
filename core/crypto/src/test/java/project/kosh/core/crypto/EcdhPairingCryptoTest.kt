@@ -153,4 +153,156 @@ class EcdhPairingCryptoTest {
             EcdhPairingCrypto.decryptPayload("deadbeef", receiverKeyPair.privateKey)
         }
     }
+
+    @Test
+    fun compoundPayload_fullRoundTripEncryptionAndDecryption() {
+        val receiverKeyPair = EcdhPairingCrypto.generateKeyPair()
+        val originalMasterKey = MasterVaultKey.generate()
+        val ticketHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+        val payloadHex = EcdhPairingCrypto.encryptCompoundPayload(
+            ticketHex = ticketHex,
+            vaultKey = originalMasterKey,
+            peerPublicKey = receiverKeyPair.publicKey
+        )
+        assertEquals(248, payloadHex.length) // 124 bytes = 248 hex characters
+
+        val bundle = EcdhPairingCrypto.decryptCompoundPayload(payloadHex, receiverKeyPair.privateKey)
+        assertEquals(ticketHex, bundle.registrationTicket)
+        assertArrayEquals(originalMasterKey.keyBytes, bundle.vaultKey.keyBytes)
+
+        bundle.close()
+        receiverKeyPair.close()
+    }
+
+    @Test
+    fun compoundPayload_backwardCompatibilityWithLegacy184HexChars() {
+        val receiverKeyPair = EcdhPairingCrypto.generateKeyPair()
+        val originalMasterKey = MasterVaultKey.generate()
+
+        // Generate legacy 184-hex envelope
+        val legacyPayloadHex = EcdhPairingCrypto.encryptPayload(originalMasterKey, receiverKeyPair.publicKey)
+        assertEquals(184, legacyPayloadHex.length)
+
+        // Decrypt using compound unpacker
+        val bundle = EcdhPairingCrypto.decryptCompoundPayload(legacyPayloadHex, receiverKeyPair.privateKey)
+        assertEquals("", bundle.registrationTicket)
+        assertArrayEquals(originalMasterKey.keyBytes, bundle.vaultKey.keyBytes)
+
+        bundle.close()
+        receiverKeyPair.close()
+    }
+
+    @Test
+    fun compoundPayload_tamperedTag_failsDecryption() {
+        val receiverKeyPair = EcdhPairingCrypto.generateKeyPair()
+        val originalMasterKey = MasterVaultKey.generate()
+        val ticketHex = "a1b2c3d4e5f60123a1b2c3d4e5f60123a1b2c3d4e5f60123a1b2c3d4e5f60123"
+
+        val payloadHex = EcdhPairingCrypto.encryptCompoundPayload(
+            ticketHex = ticketHex,
+            vaultKey = originalMasterKey,
+            peerPublicKey = receiverKeyPair.publicKey
+        )
+        val raw = EcdhPairingCrypto.hexToBytes(payloadHex)
+
+        // Tamper last byte of GCM tag
+        raw[raw.size - 1] = (raw[raw.size - 1].toInt() xor 0x7F).toByte()
+        val tamperedHex = EcdhPairingCrypto.bytesToHex(raw)
+
+        assertThrows(AEADBadTagException::class.java) {
+            EcdhPairingCrypto.decryptCompoundPayload(tamperedHex, receiverKeyPair.privateKey)
+        }
+        receiverKeyPair.close()
+    }
+
+    @Test
+    fun masterVaultKey_closeZeroesKeyBytesAndSetsIsClosed() {
+        val masterKey = MasterVaultKey.generate()
+        assertFalse(masterKey.isClosed)
+        assertTrue(masterKey.keyBytes.any { it != 0.toByte() })
+
+        masterKey.close()
+        assertTrue(masterKey.isClosed)
+        assertTrue(masterKey.keyBytes.all { it == 0.toByte() })
+
+        // Calling close again is idempotent
+        masterKey.close()
+        assertTrue(masterKey.isClosed)
+    }
+
+    @Test
+    fun pairingBundle_closeZeroesVaultKeyAndSetsIsClosed() {
+        val masterKey = MasterVaultKey.generate()
+        val bundle = PairingBundle(
+            registrationTicket = "0123456789abcdef".repeat(4),
+            vaultKey = masterKey
+        )
+        assertFalse(bundle.isClosed)
+        assertFalse(masterKey.isClosed)
+
+        bundle.close()
+        assertTrue(bundle.isClosed)
+        assertTrue(masterKey.isClosed)
+        assertTrue(masterKey.keyBytes.all { it == 0.toByte() })
+    }
+
+    @Test
+    fun compoundPayload_toleratesWhitespaceAndUppercase() {
+        val receiverKeyPair = EcdhPairingCrypto.generateKeyPair()
+        val masterKey = MasterVaultKey.generate()
+        val ticketHex = "0123456789abcdef".repeat(4)
+
+        val payloadHex = EcdhPairingCrypto.encryptCompoundPayload(
+            ticketHex = "  $ticketHex  ",
+            vaultKey = masterKey,
+            peerPublicKey = receiverKeyPair.publicKey
+        )
+
+        val uppercasePayload = "  " + payloadHex.uppercase() + "  "
+        val bundle = EcdhPairingCrypto.decryptCompoundPayload(uppercasePayload, receiverKeyPair.privateKey)
+
+        assertEquals(ticketHex, bundle.registrationTicket)
+        assertArrayEquals(masterKey.keyBytes, bundle.vaultKey.keyBytes)
+
+        bundle.close()
+        receiverKeyPair.close()
+    }
+
+    @Test
+    fun decryptPayload_producesKeyThatZeroesOnClose() {
+        val receiverKeyPair = EcdhPairingCrypto.generateKeyPair()
+        val masterKey = MasterVaultKey.generate()
+        val payloadHex = EcdhPairingCrypto.encryptPayload(masterKey, receiverKeyPair.publicKey)
+
+        val decrypted = EcdhPairingCrypto.decryptPayload(payloadHex, receiverKeyPair.privateKey)
+        assertArrayEquals(masterKey.keyBytes, decrypted.keyBytes)
+        assertFalse(decrypted.isClosed)
+
+        decrypted.close()
+        assertTrue(decrypted.isClosed)
+        assertTrue(decrypted.keyBytes.all { it == 0.toByte() })
+
+        masterKey.close()
+        receiverKeyPair.close()
+    }
+
+    @Test
+    fun decryptCompoundPayload_tamperedPayload_failsAndLeavesNoUncaughtExceptions() {
+        val receiverKeyPair = EcdhPairingCrypto.generateKeyPair()
+        val masterKey = MasterVaultKey.generate()
+        val ticketHex = "0123456789abcdef".repeat(4)
+
+        val payloadHex = EcdhPairingCrypto.encryptCompoundPayload(ticketHex, masterKey, receiverKeyPair.publicKey)
+        val tamperedBytes = EcdhPairingCrypto.hexToBytes(payloadHex)
+        tamperedBytes[tamperedBytes.size - 2] = (tamperedBytes[tamperedBytes.size - 2].toInt() xor 0xFF).toByte()
+        val tamperedHex = EcdhPairingCrypto.bytesToHex(tamperedBytes)
+
+        assertThrows(AEADBadTagException::class.java) {
+            EcdhPairingCrypto.decryptCompoundPayload(tamperedHex, receiverKeyPair.privateKey)
+        }
+
+        masterKey.close()
+        receiverKeyPair.close()
+    }
 }

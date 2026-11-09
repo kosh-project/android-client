@@ -21,27 +21,26 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CopyAll
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.TextSnippet
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -55,8 +54,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentType
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -69,22 +71,25 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Dedicated 24-Word Cold Storage Backup Screen presented immediately after account registration.
+ * Dedicated 24-Word Recovery Phrase Screen presented immediately after account registration.
  *
  * Implements a strict cryptographic barrier: users cannot proceed to their vault until acknowledging
  * they have preserved their 24-word recovery phrase in offline cold storage.
  *
  * Features:
- * - Clear 24-word numbered grid (12 rows x 2 columns) with monospace typography.
- * - Plaintext document export (.txt) via Android Storage Access Framework.
- * - Printable paper wallet document export (.pdf) via native [PdfDocument].
- * - Secure clipboard copy option with a privacy and keyboard sniffer warning alert.
+ * - Playful registration progress bar at top (Step 2 of 4).
+ * - Meaningful subtitle replacing useless warnings.
+ * - Monospaced 3-column numbered 24-word grid.
+ * - Plaintext document export (.txt) with TextSnippet icon.
+ * - Printable paper wallet document export (.pdf) with PictureAsPdf icon.
+ * - Secure clipboard copy option with CopyAll icon and simplified privacy alert.
  * - Acknowledgment barrier checkbox unlocking the primary navigation action.
  *
  * @param words The 24 BIP-39 mnemonic recovery words.
  * @param serverHost The server domain or IP endpoint for inclusion in paper wallet metadata.
  * @param onProceed Navigation callback invoked when the user confirms cold storage backup.
  */
+@Suppress("DEPRECATION")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecoveryBackupScreen(
@@ -141,7 +146,7 @@ fun RecoveryBackupScreen(
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Lock,
-                                    contentDescription = "Cold Storage",
+                                    contentDescription = "Recovery Phrase",
                                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -149,7 +154,7 @@ fun RecoveryBackupScreen(
                         }
                         Spacer(Modifier.width(12.dp))
                         Text(
-                            text = "Cold Storage Backup",
+                            text = "Recovery Phrase",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold
                         )
@@ -171,95 +176,63 @@ fun RecoveryBackupScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(
-                    text = "Save Your Recovery Phrase",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
+                // Playful Registration Progress Bar (Step 2 of 4)
+                RegistrationProgressBar(
+                    currentStep = 2,
+                    totalSteps = 4
                 )
 
-                Spacer(Modifier.height(8.dp))
-
-                Text(
-                    text = "These 24 words are the supreme master key to your Zero-Knowledge vault. The server cannot restore your account or reset your access if this is lost.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(Modifier.height(16.dp))
-
-                // Security Warning Card
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Recovery Phrase",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
                     )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Warning,
-                            contentDescription = "Warning",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "Zero-Knowledge Invariant",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = "Write these words down on paper or export them to an encrypted offline storage drive. Never store unencrypted recovery words in cloud drives or unverified apps.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                lineHeight = 17.sp
-                            )
-                        }
-                    }
-                }
 
-                Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(8.dp))
 
-                // Numbered 24-Word Grid (12 rows x 2 columns)
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-                ) {
+                    Text(
+                        text = "Write these words down on paper or export them to an offline storage drive. Never store unencrypted recovery words online.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(Modifier.height(20.dp))
+
+                    // Numbered 24-Word Grid (3 columns x 8 rows)
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        val rowCount = (words.size + 1) / 2
+                        val colCount = 3
+                        val rowCount = (words.size + colCount - 1) / colCount
                         for (rowIndex in 0 until rowCount) {
-                            val firstIndex = rowIndex * 2
+                            val firstIndex = rowIndex * colCount
                             val secondIndex = firstIndex + 1
+                            val thirdIndex = firstIndex + 2
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                WordGridCell(
-                                    index = firstIndex,
-                                    word = words.getOrElse(firstIndex) { "" },
-                                    modifier = Modifier.weight(1f)
-                                )
+                                if (firstIndex < words.size) {
+                                    WordGridCell(
+                                        index = firstIndex,
+                                        word = words[firstIndex],
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                } else {
+                                    Spacer(Modifier.weight(1f))
+                                }
+
                                 if (secondIndex < words.size) {
                                     WordGridCell(
                                         index = secondIndex,
@@ -269,129 +242,161 @@ fun RecoveryBackupScreen(
                                 } else {
                                     Spacer(Modifier.weight(1f))
                                 }
+
+                                if (thirdIndex < words.size) {
+                                    WordGridCell(
+                                        index = thirdIndex,
+                                        word = words[thirdIndex],
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                } else {
+                                    Spacer(Modifier.weight(1f))
+                                }
                             }
                         }
                     }
-                }
 
-                Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(16.dp))
 
-                // Export Options Section
-                Text(
-                    text = "Backup & Export Options",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    // Recovery Phrase Display Field for Password Manager Autofill
+                    OutlinedTextField(
+                        value = words.joinToString(" "),
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Master Recovery Phrase") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .semantics { contentType = ContentType.Password },
+                        shape = RoundedCornerShape(12.dp),
+                        minLines = 2,
+                        maxLines = 3
+                    )
 
-                Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(20.dp))
 
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // Export Plaintext File (.txt)
-                    FilledTonalButton(
-                        onClick = { txtExportLauncher.launch("kosh-recovery-phrase.txt") },
+                    // Export Options Section
+                    Text(
+                        text = "Backup & Export Options",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Export Plaintext File (.txt) with TextSnippet Icon
+                        FilledTonalButton(
+                            onClick = { txtExportLauncher.launch("kosh-recovery-phrase.txt") },
+                            shape = RoundedCornerShape(28.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.TextSnippet,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("Export Document (.txt)", fontWeight = FontWeight.SemiBold)
+                        }
+
+                        // Export Printable Paper Wallet (.pdf) with PictureAsPdf Icon
+                        FilledTonalButton(
+                            onClick = { pdfExportLauncher.launch("kosh-paper-wallet.pdf") },
+                            shape = RoundedCornerShape(28.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.PictureAsPdf,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("Printable Paper Wallet (.pdf)", fontWeight = FontWeight.SemiBold)
+                        }
+
+                        // Secure Clipboard Copy with CopyAll Icon
+                        OutlinedButton(
+                            onClick = { showClipboardAlert = true },
+                            shape = RoundedCornerShape(28.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CopyAll,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text("Copy to Clipboard", fontWeight = FontWeight.Medium)
+                        }
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+
+                    // Acknowledgment Checkbox Barrier
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { hasAcknowledged = !hasAcknowledged }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = hasAcknowledged,
+                                onCheckedChange = { hasAcknowledged = it }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "I have securely saved my 24-word recovery phrase in offline cold storage.",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(20.dp))
+
+                    // Primary Action Button: Proceed to Vault
+                    Button(
+                        onClick = onProceed,
+                        enabled = hasAcknowledged,
                         shape = RoundedCornerShape(28.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(56.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Share,
+                            imageVector = Icons.Default.Check,
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text("Export Document (.txt)", fontWeight = FontWeight.SemiBold)
-                    }
-
-                    // Export Printable Paper Wallet (.pdf)
-                    FilledTonalButton(
-                        onClick = { pdfExportLauncher.launch("kosh-paper-wallet.pdf") },
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text("Printable Paper Wallet (.pdf)", fontWeight = FontWeight.SemiBold)
-                    }
-
-                    // Secure Clipboard Copy
-                    OutlinedButton(
-                        onClick = { showClipboardAlert = true },
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                    ) {
-                        Text("Copy to Clipboard", fontWeight = FontWeight.Medium)
-                    }
-                }
-
-                Spacer(Modifier.height(24.dp))
-
-                // Acknowledgment Checkbox Barrier
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { hasAcknowledged = !hasAcknowledged }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Checkbox(
-                            checked = hasAcknowledged,
-                            onCheckedChange = { hasAcknowledged = it }
+                            modifier = Modifier.size(20.dp)
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = "I have securely saved my 24-word recovery phrase in offline cold storage.",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurface
+                            text = "Proceed to Vault",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
                         )
                     }
+
+                    Spacer(Modifier.height(16.dp))
                 }
-
-                Spacer(Modifier.height(20.dp))
-
-                // Primary Action Button: Proceed to Vault
-                Button(
-                    onClick = onProceed,
-                    enabled = hasAcknowledged,
-                    shape = RoundedCornerShape(28.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Check,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "Proceed to Vault",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp
-                    )
-                }
-
-                Spacer(Modifier.height(16.dp))
             }
 
-            // Clipboard Security Warning Dialog
+            // Simplified Clipboard Security Warning Dialog
             if (showClipboardAlert) {
                 AlertDialog(
                     onDismissRequest = { showClipboardAlert = false },
@@ -405,14 +410,14 @@ fun RecoveryBackupScreen(
                     },
                     title = {
                         Text(
-                            text = "Clipboard Security Alert",
+                            text = "Clipboard Alert",
                             fontWeight = FontWeight.Bold,
                             textAlign = TextAlign.Center
                         )
                     },
                     text = {
                         Text(
-                            text = "Copying your master recovery phrase to the Android clipboard allows keyboard apps and background utilities to potentially inspect your private seed. Only use this option if you are immediately pasting into a trusted password manager.",
+                            text = "Keyboards and clipboard managers can read copied text. Only copy if you are pasting directly into a secure password manager.",
                             style = MaterialTheme.typography.bodyMedium,
                             textAlign = TextAlign.Center
                         )
@@ -455,12 +460,12 @@ private fun WordGridCell(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
         modifier = modifier
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -468,14 +473,15 @@ private fun WordGridCell(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold,
-                modifier = Modifier.widthIn(min = 28.dp)
+                fontSize = 11.sp
             )
             Spacer(Modifier.width(4.dp))
             Text(
                 text = word,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp,
                 maxLines = 1
             )
         }
@@ -545,7 +551,7 @@ fun generateRecoveryPdf(
         val paint = Paint().apply { isAntiAlias = true }
 
         // Top Header Banner
-        paint.color = Color.rgb(24, 28, 36)
+        paint.color = Color.rgb(21, 25, 34)
         canvas.drawRect(0f, 0f, pageWidth.toFloat(), 90f, paint)
 
         // Header Title
@@ -556,7 +562,7 @@ fun generateRecoveryPdf(
 
         paint.textSize = 10.5f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        paint.color = Color.rgb(180, 190, 205)
+        paint.color = Color.rgb(199, 201, 255)
         canvas.drawText("Zero-Knowledge 24-Word Master Recovery Key Document", 40f, 72f, paint)
 
         // Security Warning Box

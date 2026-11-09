@@ -32,6 +32,9 @@ import project.kosh.core.network.ServerConfig
 import project.kosh.core.network.ServerConfigurationStore
 import project.kosh.core.network.ServerHealthPinger
 
+import project.kosh.core.auth.DevicePairingManager
+import project.kosh.core.auth.PairingState
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class AuthViewModelTest {
 
@@ -43,6 +46,7 @@ class AuthViewModelTest {
     private lateinit var mockServerConfigStore: ServerConfigurationStore
     private lateinit var mockMdnsManager: MdnsDiscoveryManager
     private lateinit var mockHealthPinger: ServerHealthPinger
+    private lateinit var mockDevicePairingManager: DevicePairingManager
 
     private lateinit var viewModel: AuthViewModel
 
@@ -56,6 +60,7 @@ class AuthViewModelTest {
         mockServerConfigStore = mockk(relaxed = true)
         mockMdnsManager = mockk(relaxed = true)
         mockHealthPinger = mockk(relaxed = true)
+        mockDevicePairingManager = mockk(relaxed = true)
 
         every { mockMdnsManager.discoverServers() } returns flowOf(emptyList())
 
@@ -65,7 +70,8 @@ class AuthViewModelTest {
             passkeyAuthManager = mockPasskeyManager,
             serverConfigStore = mockServerConfigStore,
             mdnsDiscoveryManager = mockMdnsManager,
-            serverHealthPinger = mockHealthPinger
+            serverHealthPinger = mockHealthPinger,
+            devicePairingManager = mockDevicePairingManager
         ).apply {
             defaultDispatcher = testDispatcher
         }
@@ -506,7 +512,8 @@ class AuthViewModelTest {
             passkeyAuthManager = mockPasskeyManager,
             serverConfigStore = mockServerConfigStore,
             mdnsDiscoveryManager = mockMdnsManager,
-            serverHealthPinger = mockHealthPinger
+            serverHealthPinger = mockHealthPinger,
+            devicePairingManager = mockDevicePairingManager
         )
         testScheduler.advanceUntilIdle()
 
@@ -561,6 +568,219 @@ class AuthViewModelTest {
 
         val state = viewModel.pingState.value
         assertTrue(state is PingUiState.Error)
+    }
+
+    @Test
+    fun `hasStoredCredentials reflects presence of enrolled passkeys or session keys`() {
+        every { mockPasskeyManager.hasEnrolledPasskeys() } returns true
+        every { mockRepository.hasStoredCredentials() } returns false
+        viewModel.refreshStoredCredentials()
+        assertTrue(viewModel.hasStoredCredentials.value)
+
+        every { mockPasskeyManager.hasEnrolledPasskeys() } returns false
+        every { mockRepository.hasStoredCredentials() } returns false
+        viewModel.refreshStoredCredentials()
+        assertFalse(viewModel.hasStoredCredentials.value)
+    }
+
+    @Test
+    fun `startDevicePairing collects receiver flow and transitions to success upon fulfillment`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockRepository.hasVaultKey() } returns false
+        every { mockPasskeyManager.hasEnrolledPasskeys() } returns true
+        viewModel.refreshStoredCredentials()
+
+        coEvery { mockDevicePairingManager.startReceiverFlow(any()) } returns flowOf(
+            PairingState.Ready("c7m9x4b2", "{}", 300L),
+            PairingState.AwaitingFulfillment,
+            PairingState.Success(masterKey, "ticket-aabbcc")
+        )
+
+        viewModel.startDevicePairing()
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(PairingState.Success(masterKey, "ticket-aabbcc"), viewModel.pairingState.value)
+        assertEquals("ticket-aabbcc", viewModel.lastRegistrationTicket.value)
+        assertTrue(viewModel.state.value is AuthUiState.Success)
+        assertTrue((viewModel.state.value as AuthUiState.Success).isNewRegistration)
+    }
+
+    @Test
+    fun `startDevicePairing initiates host flow when device has vault key`() = runTest {
+        every { mockRepository.hasVaultKey() } returns true
+        coEvery { mockDevicePairingManager.startHostFlow(any(), any()) } returns flowOf(
+            PairingState.AwaitingJoin("c7m9x4b2", "{\"mailbox_id\":\"c7m9x4b2\"}", 300L)
+        )
+
+        viewModel.startDevicePairing()
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.pairingState.value is PairingState.AwaitingJoin)
+        assertEquals("c7m9x4b2", (viewModel.pairingState.value as PairingState.AwaitingJoin).mailboxId)
+    }
+
+    @Test
+    fun `linkWithScannedQr fulfills sender session when device already has vault key`() = runTest {
+        every { mockRepository.hasVaultKey() } returns true
+        coEvery {
+            mockDevicePairingManager.fulfillSenderSession(
+                mailboxId = "c7m9x4b2",
+                receiverPublicKeyHex = "aabbcc",
+                token = "peer-token"
+            )
+        } returns NetworkResult.Success(Unit)
+
+        val qrJson = """{"mailbox_id":"c7m9x4b2","public_key":"aabbcc","token":"peer-token"}"""
+        viewModel.linkWithScannedQr(qrJson)
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Success)
+    }
+
+    @Test
+    fun `linkWithScannedQr joins host session when device has no vault key`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockRepository.hasVaultKey() } returns false
+        coEvery {
+            mockDevicePairingManager.startJoinFlow(
+                mailboxId = "c7m9x4b2",
+                host = "192.168.1.5",
+                port = 23342,
+                fingerprint = any()
+            )
+        } returns flowOf(
+            PairingState.AwaitingFulfillment,
+            PairingState.Success(masterKey, "ticket-xyz")
+        )
+
+        val qrJson = """{"mailbox_id":"c7m9x4b2","host":"192.168.1.5","port":23342,"mode":"host"}"""
+        viewModel.linkWithScannedQr(qrJson)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals("ticket-xyz", viewModel.lastRegistrationTicket.value)
+        assertTrue(viewModel.state.value is AuthUiState.Success)
+        assertTrue((viewModel.state.value as AuthUiState.Success).isNewRegistration)
+    }
+
+    @Test
+    fun `enrollPasskeyWithTicket delegates to passkeyAuthManager and transitions to success`() = runTest {
+        val mockContext: Context = mockk()
+        coEvery {
+            mockPasskeyManager.registerPasskeyWithTicket(
+                activityContext = mockContext,
+                registrationTicket = "ticket-secret",
+                deviceNickname = "Pixel 9"
+            )
+        } returns PasskeyRegisterResult.Success
+
+        coEvery {
+            mockPasskeyManager.loginWithPasskey(mockContext)
+        } returns PasskeyLoginResult.Success("session-token", "dummy-wrapped-key", null)
+
+        viewModel.enrollPasskeyWithTicket(mockContext, "ticket-secret", "Pixel 9")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Success)
+    }
+
+    @Test
+    fun `enrollPasskeyWithTicket transitions to error when loginWithPasskey returns Error`() = runTest {
+        val mockContext: Context = mockk()
+        coEvery {
+            mockPasskeyManager.registerPasskeyWithTicket(
+                activityContext = mockContext,
+                registrationTicket = "ticket-secret",
+                deviceNickname = "Pixel 9"
+            )
+        } returns PasskeyRegisterResult.Success
+
+        coEvery {
+            mockPasskeyManager.loginWithPasskey(mockContext)
+        } returns PasskeyLoginResult.Error("Biometric sensor timeout")
+
+        viewModel.enrollPasskeyWithTicket(mockContext, "ticket-secret", "Pixel 9")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Error)
+        assertEquals("Passkey login failed: Biometric sensor timeout", (viewModel.state.value as AuthUiState.Error).message)
+    }
+
+    @Test
+    fun `enrollPasskeyWithTicket transitions to error when loginWithPasskey is cancelled`() = runTest {
+        val mockContext: Context = mockk()
+        coEvery {
+            mockPasskeyManager.registerPasskeyWithTicket(
+                activityContext = mockContext,
+                registrationTicket = "ticket-secret",
+                deviceNickname = "Pixel 9"
+            )
+        } returns PasskeyRegisterResult.Success
+
+        coEvery {
+            mockPasskeyManager.loginWithPasskey(mockContext)
+        } returns PasskeyLoginResult.Cancelled
+
+        viewModel.enrollPasskeyWithTicket(mockContext, "ticket-secret", "Pixel 9")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Error)
+        assertEquals("Passkey login cancelled", (viewModel.state.value as AuthUiState.Error).message)
+    }
+
+    @Test
+    fun `linkWithScannedQr forwards certificate fingerprint to ServerConfigurationStore`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockRepository.hasVaultKey() } returns true
+        coEvery {
+            mockDevicePairingManager.fulfillSenderSession(any(), any(), any(), any())
+        } returns NetworkResult.Success(Unit)
+
+        val testFingerprintHex = "00".repeat(31) + "ff"
+        val testPubKeyHex = "aa".repeat(32)
+        val qrJson = """{"mailbox_id":"c7m9x4b2","public_key":"$testPubKeyHex","host":"192.168.1.50","port":8443,"fingerprint":"$testFingerprintHex"}"""
+        viewModel.linkWithScannedQr(qrJson)
+        testScheduler.advanceUntilIdle()
+
+        io.mockk.verify(exactly = 1) {
+            mockServerConfigStore.updateServer(
+                host = "192.168.1.50",
+                port = 8443,
+                useTls = true,
+                pinnedCertFingerprintSha256 = match { it.size == 32 && it[31] == 0xff.toByte() }
+            )
+        }
+        masterKey.close()
+    }
+
+    @Test
+    fun `cancelDevicePairing closes active MasterVaultKey`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockRepository.hasVaultKey() } returns false
+        coEvery {
+            mockDevicePairingManager.startReceiverFlow(any())
+        } returns flowOf(
+            PairingState.Success(masterKey, "ticket-test")
+        )
+
+        viewModel.startDevicePairing()
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.pairingState.value is PairingState.Success)
+        assertFalse(masterKey.isClosed)
+
+        viewModel.cancelDevicePairing()
+
+        assertTrue(masterKey.isClosed)
+        assertEquals(null, viewModel.pairingState.value)
+    }
+
+    @Test
+    fun `linkWithScannedQr sets error on malformed qr code`() = runTest {
+        viewModel.linkWithScannedQr("not-a-valid-json")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Error)
+        assertTrue((viewModel.state.value as AuthUiState.Error).message.contains("Invalid pairing QR code"))
     }
 
     @After

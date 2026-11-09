@@ -26,6 +26,10 @@ import project.kosh.core.network.PingResult
 import project.kosh.core.network.ServerConfig
 import project.kosh.core.network.ServerConfigurationStore
 import project.kosh.core.network.ServerHealthPinger
+import project.kosh.core.auth.DevicePairingManager
+import project.kosh.core.auth.PairingState
+import project.kosh.core.model.PairingQrPayload
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 /**
@@ -54,6 +58,7 @@ sealed interface PingUiState {
  * @param serverConfigStore Hardware-backed storage for server connection topology.
  * @param mdnsDiscoveryManager Native mDNS manager for zero-config server discovery on local LAN.
  * @param serverHealthPinger Network service probing /health and measuring latency.
+ * @param devicePairingManager E2EE ECDH device-to-device pairing manager.
  */
 @HiltViewModel
 class AuthViewModel @Inject constructor(
@@ -62,7 +67,8 @@ class AuthViewModel @Inject constructor(
     private val passkeyAuthManager: PasskeyAuthManager,
     private val serverConfigStore: ServerConfigurationStore,
     private val mdnsDiscoveryManager: MdnsDiscoveryManager,
-    private val serverHealthPinger: ServerHealthPinger
+    private val serverHealthPinger: ServerHealthPinger,
+    private val devicePairingManager: DevicePairingManager
 ) : ViewModel() {
 
     /**
@@ -100,6 +106,37 @@ class AuthViewModel @Inject constructor(
                 started = SharingStarted.WhileSubscribed(5000),
                 initialValue = emptyList()
             )
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private val _hasStoredCredentials = MutableStateFlow(
+        passkeyAuthManager.hasEnrolledPasskeys() || authRepository.hasStoredCredentials()
+    )
+
+    /**
+     * Observable flag indicating whether this device has an enrolled biometric passkey
+     * or active session credentials persisted in hardware-backed KeyStore.
+     */
+    val hasStoredCredentials: StateFlow<Boolean> = _hasStoredCredentials.asStateFlow()
+
+    fun refreshStoredCredentials() {
+        _hasStoredCredentials.value =
+            passkeyAuthManager.hasEnrolledPasskeys() || authRepository.hasStoredCredentials()
+    }
+
+    private val _pairingState = MutableStateFlow<PairingState?>(null)
+
+    /**
+     * Observable stream representing out-of-band ECDH device pairing lifecycle.
+     */
+    val pairingState: StateFlow<PairingState?> = _pairingState.asStateFlow()
+
+    private val _lastRegistrationTicket = MutableStateFlow<String?>(null)
+
+    /**
+     * Observable single-use registration ticket acquired from successful pairing.
+     */
+    val lastRegistrationTicket: StateFlow<String?> = _lastRegistrationTicket.asStateFlow()
 
 
     /**
@@ -257,13 +294,6 @@ class AuthViewModel @Inject constructor(
                         val loginResult = authRepository.loginWithRecoveryPhrase(recoveryPhrase)
                         when (loginResult) {
                             is NetworkResult.Success -> {
-                                _state.value = AuthUiState.Loading("Enrolling passkey with Android Credential Manager...")
-                                val nickname = deviceNickname ?: "Android Device"
-                                try {
-                                    passkeyAuthManager.registerPasskey(activityContext, nickname)
-                                } catch (_: Exception) {
-                                    // Optional passkey enrollment failure or cancellation (e.g. DAL error on local network)
-                                }
                                 _state.value = AuthUiState.Success(
                                     isNewRegistration = true,
                                     recoveryWords = recoveryWords
@@ -296,7 +326,7 @@ class AuthViewModel @Inject constructor(
      * @param recoveryPassphrase 24-word BIP-39 recovery phrase or master passphrase string.
      */
     fun recoverWithPassphrase(recoveryPassphrase: String) {
-        val cleanPhrase = recoveryPassphrase.trim()
+        val cleanPhrase = Bip39Sas.normalizePhrase(recoveryPassphrase)
         if (cleanPhrase.isBlank()) {
             _state.value = AuthUiState.Error("Recovery passphrase cannot be blank.")
             return
@@ -445,5 +475,189 @@ class AuthViewModel @Inject constructor(
      */
     fun resetState() {
         _state.value = AuthUiState.Idle
+    }
+
+    /**
+     * Initiates out-of-band device pairing.
+     * If this device possesses an active Master Vault Key, it acts as a host (Flow B), allocates an ephemeral
+     * mailbox, and emits [PairingState.AwaitingJoin] with the QR payload.
+     * Otherwise, it acts as a receiver (Flow A), solves the PoW puzzle, opens a mailbox, and emits [PairingState.Ready]
+     * awaiting fulfillment by an authorized device.
+     */
+    fun startDevicePairing() {
+        viewModelScope.launch {
+            _pairingState.value = null
+            _state.value = AuthUiState.Idle
+            try {
+                if (authRepository.hasVaultKey()) {
+                    // Flow B: Authenticated host displays QR code
+                    devicePairingManager.startHostFlow().collect { pState ->
+                        _pairingState.value = pState
+                        if (pState is PairingState.Success) {
+                            pState.registrationTicket?.let { ticket ->
+                                _lastRegistrationTicket.value = ticket
+                            }
+                            refreshStoredCredentials()
+                            _state.value = AuthUiState.Success(isNewRegistration = false)
+                        } else if (pState is PairingState.Error) {
+                            _state.value = AuthUiState.Error("Pairing error: ${pState.message}")
+                        }
+                    }
+                } else {
+                    // Flow A: Unauthenticated receiver displays QR code
+                    devicePairingManager.startReceiverFlow().collect { pState ->
+                        _pairingState.value = pState
+                        if (pState is PairingState.Success) {
+                            pState.registrationTicket?.let { ticket ->
+                                _lastRegistrationTicket.value = ticket
+                            }
+                            refreshStoredCredentials()
+                            val isNewDevice = !pState.registrationTicket.isNullOrBlank()
+                            _state.value = AuthUiState.Success(isNewRegistration = isNewDevice)
+                        } else if (pState is PairingState.Error) {
+                            _state.value = AuthUiState.Error("Pairing error: ${pState.message}")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                _state.value = AuthUiState.Error("Pairing failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Pairs with a peer device by parsing a scanned [PairingQrPayload] JSON string.
+     * If this device possesses the Master Vault Key, it fulfills the peer receiver's session (Flow A).
+     * If this device lacks the Master Vault Key, it joins the host's session (Flow B).
+     */
+    fun linkWithScannedQr(qrJson: String) {
+        viewModelScope.launch {
+            _state.value = AuthUiState.Loading("Processing pairing code...")
+            try {
+                val payload = json.decodeFromString<PairingQrPayload>(qrJson)
+                val payloadHost = payload.host
+                if (!payloadHost.isNullOrBlank()) {
+                    val fingerprintBytes = payload.fingerprint?.let {
+                        ServerConfigurationStore.parseFingerprint(it)
+                    } ?: serverConfigStore.getServerConfig().pinnedCertFingerprintSha256
+
+                    serverConfigStore.updateServer(
+                        host = payloadHost,
+                        port = payload.port ?: 23342,
+                        useTls = payload.fingerprint != null || serverConfigStore.isTlsEnabled(),
+                        pinnedCertFingerprintSha256 = fingerprintBytes
+                    )
+                }
+
+                if (authRepository.hasVaultKey()) {
+                    // Flow A: Sender fulfills receiver mailbox
+                    val rxPubKey = payload.publicKeyHex.orEmpty()
+                    when (val fulfillResult = devicePairingManager.fulfillSenderSession(
+                        mailboxId = payload.mailboxId,
+                        receiverPublicKeyHex = rxPubKey,
+                        token = payload.token
+                    )) {
+                        is NetworkResult.Success -> {
+                            _state.value = AuthUiState.Success(isNewRegistration = false)
+                        }
+                        is NetworkResult.Failure -> {
+                            _state.value = AuthUiState.Error("Failed to fulfill pairing: ${fulfillResult.userMessage}")
+                        }
+                    }
+                } else {
+                    // Flow B: Receiver joins host mailbox
+                    _state.value = AuthUiState.Loading("Joining pairing session...")
+                    devicePairingManager.startJoinFlow(
+                        mailboxId = payload.mailboxId,
+                        host = payload.host,
+                        port = payload.port,
+                        fingerprint = payload.fingerprint
+                    ).collect { pState ->
+                        _pairingState.value = pState
+                        if (pState is PairingState.Success) {
+                            pState.registrationTicket?.let { ticket ->
+                                _lastRegistrationTicket.value = ticket
+                            }
+                            refreshStoredCredentials()
+                            val isNewDevice = !pState.registrationTicket.isNullOrBlank()
+                            _state.value = AuthUiState.Success(isNewRegistration = isNewDevice)
+                        } else if (pState is PairingState.Error) {
+                            _state.value = AuthUiState.Error("Pairing error: ${pState.message}")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                _state.value = AuthUiState.Error("Invalid pairing QR code: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Registers a new biometric passkey credential using a one-time pairing registration ticket.
+     *
+     * @param activityContext Android Activity context for biometric dialog.
+     * @param registrationTicket Single-use hex-encoded registration ticket minted during pairing.
+     * @param deviceNickname Optional user-defined nickname for this device.
+     */
+    fun enrollPasskeyWithTicket(
+        activityContext: Context,
+        registrationTicket: String,
+        deviceNickname: String? = null
+    ) {
+        viewModelScope.launch {
+            _state.value = AuthUiState.Loading("Enrolling passkey with Android Credential Manager...")
+            try {
+                val nickname = deviceNickname ?: "Android Device"
+                val result = passkeyAuthManager.registerPasskeyWithTicket(
+                    activityContext = activityContext,
+                    registrationTicket = registrationTicket,
+                    deviceNickname = nickname
+                )
+                when (result) {
+                    is PasskeyRegisterResult.Success -> {
+                        when (val loginResult = passkeyAuthManager.loginWithPasskey(activityContext)) {
+                            is PasskeyLoginResult.Success -> {
+                                refreshStoredCredentials()
+                                _state.value = AuthUiState.Success(isNewRegistration = false)
+                            }
+                            is PasskeyLoginResult.Cancelled -> {
+                                _state.value = AuthUiState.Error("Passkey login cancelled")
+                            }
+                            is PasskeyLoginResult.Error -> {
+                                _state.value = AuthUiState.Error("Passkey login failed: ${loginResult.message}")
+                            }
+                        }
+                    }
+                    is PasskeyRegisterResult.Cancelled -> {
+                        _state.value = AuthUiState.Error("Passkey enrollment cancelled")
+                    }
+                    is PasskeyRegisterResult.Error -> {
+                        _state.value = AuthUiState.Error("Passkey enrollment failed: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                _state.value = AuthUiState.Error("Passkey enrollment failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Cancels an ongoing device pairing session and wipes any active key in memory.
+     */
+    fun cancelDevicePairing() {
+        val currentPairing = _pairingState.value
+        if (currentPairing is PairingState.Success) {
+            currentPairing.vaultKey.close()
+        }
+        _pairingState.value = null
+        _state.value = AuthUiState.Idle
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        val currentPairing = _pairingState.value
+        if (currentPairing is PairingState.Success) {
+            currentPairing.vaultKey.close()
+        }
     }
 }

@@ -90,14 +90,43 @@ object Bip39Sas {
     }
 
     /**
+     * Extracts and normalizes canonical BIP-39 words from free-form user input.
+     *
+     * Handles numbering prefixes (e.g. "1.", "12)", "3:"), commas, semicolons,
+     * newlines, and trailing punctuation, returning an ordered list of sanitized lowercase words.
+     *
+     * @param phrase Free-form input from manual typing, clipboard paste, or password managers.
+     * @return Ordered list of recognized word tokens.
+     */
+    fun extractWords(phrase: String): List<String> {
+        return phrase.trim()
+            .lowercase()
+            .split("[\\s,;]+".toRegex())
+            .map { it.replace("^\\d+[.:)\\s-]*".toRegex(), "").replace("[^a-z]".toRegex(), "") }
+            .filter { it.isNotEmpty() }
+    }
+
+    /**
+     * Normalizes a recovery phrase into a canonical single-space-separated BIP-39 string.
+     *
+     * Strips numbering prefixes, commas, and formatting noise while preserving word order.
+     *
+     * @param phrase Free-form recovery phrase input.
+     * @return Canonical space-separated string of lowercase words.
+     */
+    fun normalizePhrase(phrase: String): String {
+        return extractWords(phrase).joinToString(" ")
+    }
+
+    /**
      * Validates whether a candidate recovery phrase consists of canonical BIP-39 words.
      * Accepts either standard 24-word recovery phrases or 12-word phrases.
      *
-     * @param phrase Candidate space-separated recovery phrase.
+     * @param phrase Candidate recovery phrase (raw or formatted).
      * @return True if the phrase contains valid BIP-39 words of length 24 or 12.
      */
     fun isValidPhrase(phrase: String): Boolean {
-        val words = phrase.trim().lowercase().split("\\s+".toRegex()).filter { it.isNotEmpty() }
+        val words = extractWords(phrase)
         if (words.size != RECOVERY_WORD_COUNT && words.size != SAS_WORD_COUNT) return false
         return words.all { isValidWord(it) }
     }
@@ -105,11 +134,11 @@ object Bip39Sas {
     /**
      * Specifically validates whether a recovery phrase consists of exactly 24 valid BIP-39 words.
      *
-     * @param phrase Candidate space-separated recovery phrase.
+     * @param phrase Candidate recovery phrase (raw or formatted).
      * @return True if the phrase contains exactly 24 canonical BIP-39 words.
      */
     fun isValidRecoveryPhrase(phrase: String): Boolean {
-        val words = phrase.trim().lowercase().split("\\s+".toRegex()).filter { it.isNotEmpty() }
+        val words = extractWords(phrase)
         if (words.size != RECOVERY_WORD_COUNT) return false
         return words.all { isValidWord(it) }
     }

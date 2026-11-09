@@ -12,6 +12,8 @@ import kotlinx.coroutines.launch
 import project.kosh.core.auth.PasskeyAuthManager
 import project.kosh.core.auth.PasskeyRegisterResult
 import project.kosh.core.model.NetworkResult
+import project.kosh.core.auth.PasskeyLoginResult
+import project.kosh.core.auth.SessionManager
 import javax.inject.Inject
 
 /**
@@ -28,10 +30,12 @@ sealed interface PasskeyEnrollmentState {
  * ViewModel managing the post-registration device setup and biometric onboarding workflow.
  *
  * @param passkeyAuthManager FIDO2 / WebAuthn coordinator for enrolling platform authenticators.
+ * @param sessionManager Session and registration ticket storage provider.
  */
 @HiltViewModel
 class UserSetupViewModel @Inject constructor(
-    private val passkeyAuthManager: PasskeyAuthManager
+    private val passkeyAuthManager: PasskeyAuthManager,
+    private val sessionManager: SessionManager? = null
 ) : ViewModel() {
 
     private val _deviceNickname = MutableStateFlow(getDefaultDeviceName())
@@ -60,21 +64,65 @@ class UserSetupViewModel @Inject constructor(
     /**
      * Enrolls a biometric passkey for this client using the device nickname.
      *
+     * Handles both Mode 1 (existing authenticated session) and Mode 2 (dual-mode single-use
+     * registration ticket acquired during device pairing).
+     *
      * @param activityContext Android activity context required for platform credential prompt.
      */
     fun enrollPasskey(activityContext: Context) {
         viewModelScope.launch {
             _enrollmentState.value = PasskeyEnrollmentState.Enrolling
             val nickname = _deviceNickname.value.trim().ifEmpty { getDefaultDeviceName() }
-            when (val result = passkeyAuthManager.registerPasskey(activityContext, nickname)) {
-                is PasskeyRegisterResult.Success -> {
-                    _enrollmentState.value = PasskeyEnrollmentState.Enrolled
+            val regTicket = sessionManager?.getRegistrationTicket()
+            val currentToken = sessionManager?.getToken()
+
+            if (currentToken.isNullOrBlank() && !regTicket.isNullOrBlank()) {
+                when (val result = passkeyAuthManager.registerPasskeyWithTicket(activityContext, regTicket, nickname)) {
+                    is PasskeyRegisterResult.Success -> {
+                        sessionManager.clearRegistrationTicket()
+                        when (val loginResult = passkeyAuthManager.loginWithPasskey(activityContext)) {
+                            is PasskeyLoginResult.Success -> {
+                                _enrollmentState.value = PasskeyEnrollmentState.Enrolled
+                            }
+                            is PasskeyLoginResult.Cancelled -> {
+                                _enrollmentState.value = PasskeyEnrollmentState.Idle
+                            }
+                            is PasskeyLoginResult.Error -> {
+                                _enrollmentState.value = PasskeyEnrollmentState.Error(loginResult.message)
+                            }
+                        }
+                    }
+                    is PasskeyRegisterResult.Cancelled -> {
+                        _enrollmentState.value = PasskeyEnrollmentState.Idle
+                    }
+                    is PasskeyRegisterResult.Error -> {
+                        _enrollmentState.value = PasskeyEnrollmentState.Error(result.message)
+                    }
                 }
-                is PasskeyRegisterResult.Cancelled -> {
-                    _enrollmentState.value = PasskeyEnrollmentState.Idle
+            } else if (currentToken.isNullOrBlank() && passkeyAuthManager.hasEnrolledPasskeys()) {
+                // Passkey was already registered (e.g. prompt was cancelled on the subsequent login ceremony); complete sign-in
+                when (val loginResult = passkeyAuthManager.loginWithPasskey(activityContext)) {
+                    is PasskeyLoginResult.Success -> {
+                        _enrollmentState.value = PasskeyEnrollmentState.Enrolled
+                    }
+                    is PasskeyLoginResult.Cancelled -> {
+                        _enrollmentState.value = PasskeyEnrollmentState.Idle
+                    }
+                    is PasskeyLoginResult.Error -> {
+                        _enrollmentState.value = PasskeyEnrollmentState.Error(loginResult.message)
+                    }
                 }
-                is PasskeyRegisterResult.Error -> {
-                    _enrollmentState.value = PasskeyEnrollmentState.Error(result.message)
+            } else {
+                when (val result = passkeyAuthManager.registerPasskey(activityContext, nickname)) {
+                    is PasskeyRegisterResult.Success -> {
+                        _enrollmentState.value = PasskeyEnrollmentState.Enrolled
+                    }
+                    is PasskeyRegisterResult.Cancelled -> {
+                        _enrollmentState.value = PasskeyEnrollmentState.Idle
+                    }
+                    is PasskeyRegisterResult.Error -> {
+                        _enrollmentState.value = PasskeyEnrollmentState.Error(result.message)
+                    }
                 }
             }
         }

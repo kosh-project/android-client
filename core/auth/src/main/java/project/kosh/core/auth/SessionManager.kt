@@ -186,7 +186,60 @@ class SessionManager @Inject constructor(
     }
 
     /**
-     * Clears all stored session credentials and vault keys from local storage.
+     * Encrypts and securely persists the ephemeral registration ticket in hardware-backed storage.
+     *
+     * @param ticket The 64-hex Crockford registration ticket minted during pairing.
+     */
+    fun saveRegistrationTicket(ticket: String) {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
+
+        val iv = cipher.iv
+        val ciphertext = cipher.doFinal(ticket.toByteArray(Charsets.UTF_8))
+
+        prefs.edit {
+            putString("registration_ticket_iv", Base64.encodeToString(iv, Base64.DEFAULT))
+            putString("registration_ticket_enc", Base64.encodeToString(ciphertext, Base64.DEFAULT))
+        }
+    }
+
+    /**
+     * Decrypts and retrieves the ephemeral registration ticket from secure storage.
+     *
+     * @return The decrypted registration ticket, or null if absent or decryption fails.
+     */
+    fun getRegistrationTicket(): String? {
+        val ivBase64 = prefs.getString("registration_ticket_iv", null) ?: return null
+        val ciphertextBase64 = prefs.getString("registration_ticket_enc", null) ?: return null
+
+        val iv = Base64.decode(ivBase64, Base64.DEFAULT)
+        val ciphertext = Base64.decode(ciphertextBase64, Base64.DEFAULT)
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val spec = GCMParameterSpec(128, iv)
+
+        cipher.init(Cipher.DECRYPT_MODE, getSecretKey(), spec)
+
+        return try {
+            val decodedBytes = cipher.doFinal(ciphertext)
+            String(decodedBytes, Charsets.UTF_8)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Clears any stored ephemeral registration ticket.
+     */
+    fun clearRegistrationTicket() {
+        prefs.edit {
+            remove("registration_ticket_iv")
+            remove("registration_ticket_enc")
+        }
+    }
+
+    /**
+     * Clears all stored session credentials, vault keys, and registration tickets from local storage.
      *
      * Invoked during user logout or when the server responds with HTTP 401 Unauthorized
      * (e.g. token expiration or server reboot with rotated signing secret) to prevent
@@ -199,6 +252,8 @@ class SessionManager @Inject constructor(
             remove("vault_key_iv")
             remove("vault_key_enc")
             remove("active_user")
+            remove("registration_ticket_iv")
+            remove("registration_ticket_enc")
         }
     }
 }

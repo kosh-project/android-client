@@ -175,6 +175,77 @@ class PasskeyClient @Inject constructor(
     }
 
     /**
+     * Initiates passkey registration ceremony using an ephemeral single-use registration ticket.
+     *
+     * Route: `POST /api/auth/passkey/register/start` (unauthenticated, authorized via `registration_ticket`).
+     *
+     * @param ticket 64-hex-character single-use registration ticket received from device pairing.
+     * @return [NetworkResult.Success] containing [PasskeyChallengeResponse], or [NetworkResult.Failure].
+     */
+    suspend fun startRegistrationWithTicket(ticket: String): NetworkResult<PasskeyChallengeResponse> =
+        withContext(Dispatchers.IO) {
+            try {
+                val cleanTicket = ticket.trim()
+                val url = "${getApiBaseUrl()}/auth/passkey/register/start"
+                val request = Request.Builder()
+                    .url(url)
+                    .header("Authorization", "Bearer $cleanTicket")
+                    .header("X-Registration-Ticket", cleanTicket)
+                    .post("{}".toRequestBody(jsonMediaType))
+                    .build()
+
+                publicClient.newCall(request).execute().use { response ->
+                    val body = response.body.string()
+                    if (response.isSuccessful) {
+                        NetworkResult.Success(json.decodeFromString<PasskeyChallengeResponse>(body))
+                    } else {
+                        NetworkResult.fromHttp(response.code, body)
+                    }
+                }
+            } catch (e: Exception) {
+                NetworkResult.fromThrowable(e)
+            }
+        }
+
+    /**
+     * Completes passkey registration ceremony using an ephemeral single-use registration ticket.
+     *
+     * Route: `POST /api/auth/passkey/register/finish` (unauthenticated, authorized via `registration_ticket`).
+     *
+     * @param request Payload containing the challenge ID, authenticator attestation, and client-encrypted device label.
+     * @param ticket 64-hex-character single-use registration ticket. The server atomically consumes the ticket.
+     * @return [NetworkResult.Success] on HTTP 201 Created, or [NetworkResult.Failure].
+     */
+    suspend fun finishRegistrationWithTicket(
+        request: PasskeyRegisterFinishRequest,
+        ticket: String
+    ): NetworkResult<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val cleanTicket = ticket.trim()
+            val url = "${getApiBaseUrl()}/auth/passkey/register/finish"
+            val jsonBody = json.encodeToString(PasskeyRegisterFinishRequest.serializer(), request)
+            val requestBody = jsonBody.toRequestBody(jsonMediaType)
+
+            val requestBuilder = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $cleanTicket")
+                .header("X-Registration-Ticket", cleanTicket)
+                .post(requestBody)
+
+            publicClient.newCall(requestBuilder.build()).execute().use { response ->
+                if (response.isSuccessful) {
+                    NetworkResult.Success(Unit)
+                } else {
+                    val body = response.body.string()
+                    NetworkResult.fromHttp(response.code, body)
+                }
+            }
+        } catch (e: Exception) {
+            NetworkResult.fromThrowable(e)
+        }
+    }
+
+    /**
      * Lists all passkey credentials registered to the authenticated caller.
      *
      * Issues an authenticated HTTP GET request to `/api/v1/auth/passkey`.

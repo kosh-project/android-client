@@ -2,6 +2,7 @@ plugins {
     id("com.android.library")
     alias (libs.plugins.ksp)
     alias (libs.plugins.hilt)
+    alias (libs.plugins.kotlinx.serializaton)
 }
 
 android {
@@ -26,6 +27,7 @@ dependencies {
 
     implementation(libs.androidx.security.crypto)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.androidx.biometric)
     implementation(libs.androidx.credentials)
     implementation(libs.androidx.credentials.play.services.auth)
     implementation(project(":core:model"))

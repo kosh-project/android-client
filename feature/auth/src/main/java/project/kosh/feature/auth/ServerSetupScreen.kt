@@ -4,8 +4,10 @@ import android.app.Activity
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -28,14 +30,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -86,15 +89,12 @@ import project.kosh.core.network.ServerConfig
 /**
  * Screen orchestrating server discovery and Trust-On-First-Use (TOFU) certificate verification.
  *
- * Designed according to Material 3 Expressive guidelines with prominent rounded components,
- * minimal distraction, and zero boilerplate fluff.
- *
- * Flow:
- * 1. Server Discovery: Locate running Kosh server via mDNS or manual IP/domain entry.
- * 2. Probing: Retrieve leaf certificate from GET /health.
- * 3. Fingerprint Verification: Verify 12 BIP-39 SAS words or scan pairing QR code.
- *    - If mismatch: Display alert dialog explaining problem with options to retry or pick another server.
- *    - If confirmed: Pin fingerprint and proceed to sign up / sign in screen.
+ * Designed according to clean minimal guidelines:
+ * - Nearby servers prioritized front-and-center.
+ * - Manual parameters and developer ADB tools tucked behind an Advanced Settings accordion.
+ * - Contextual TopAppBar (no redundant "KOSH" branding).
+ * - Monospaced BIP-39 SAS words and SHA-256 fingerprint tucked behind a Manual Verification accordion.
+ * - Prominent "Scan Server QR Code" primary action.
  *
  * @param viewModel Backing [ServerSetupViewModel].
  * @param onServerVerified Navigation callback invoked upon successful certificate verification.
@@ -132,6 +132,11 @@ fun ServerSetupScreen(
         }
     }
 
+    val topBarTitle = when (uiState.stage) {
+        is ServerSetupStage.Verification -> "Verify Server"
+        else -> "Connect to Server"
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -145,7 +150,7 @@ fun ServerSetupScreen(
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     imageVector = Icons.Default.Lock,
-                                    contentDescription = "Server Connection",
+                                    contentDescription = topBarTitle,
                                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -153,10 +158,9 @@ fun ServerSetupScreen(
                         }
                         Spacer(Modifier.width(12.dp))
                         Text(
-                            text = "KOSH",
+                            text = topBarTitle,
                             style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 2.sp
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 },
@@ -181,7 +185,9 @@ fun ServerSetupScreen(
                         onClearError = { viewModel.clearError() },
                         onConnect = { host, port, tls ->
                             viewModel.selectAndProbeServer(host, port, tls)
-                        }
+                        },
+                        onConnectAdb = { viewModel.connectAdb() },
+                        onConnectEmulator = { viewModel.connectEmulator() }
                     )
                 }
 
@@ -326,17 +332,25 @@ fun ServerSetupScreen(
 }
 
 /**
- * Step 1: Locate Server content presenting discovered servers and manual input.
+ * Step 1: Locate Server content presenting nearby discovered servers first,
+ * with manual connection options and developer tools tucked behind an Advanced Settings accordion.
  */
+@Suppress("DEPRECATION")
 @Composable
 private fun LocateServerContent(
     discoveredServers: List<DiscoveredServer>,
     currentConfig: ServerConfig,
     errorMessage: String?,
     onClearError: () -> Unit,
-    onConnect: (host: String, port: Int, useTls: Boolean) -> Unit
+    onConnect: (host: String, port: Int, useTls: Boolean) -> Unit,
+    onConnectAdb: () -> Unit,
+    onConnectEmulator: () -> Unit
 ) {
     val focusManager = LocalFocusManager.current
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+
+    var showAdvancedSettings by rememberSaveable { mutableStateOf(false) }
 
     var hostInput by remember(currentConfig) {
         val initialHost = if (currentConfig.host.isNotBlank() && currentConfig.host != ServerConfig.DEFAULT_HOST) {
@@ -370,7 +384,7 @@ private fun LocateServerContent(
         Spacer(Modifier.height(8.dp))
 
         Text(
-            text = "Select an auto-discovered node on your Wi-Fi or specify connection parameters.",
+            text = "Select an auto-discovered node on your Wi-Fi or configure connection parameters.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
@@ -382,13 +396,11 @@ private fun LocateServerContent(
             enter = fadeIn(),
             exit = fadeOut()
         ) {
-            Card(
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer
-                ),
+                color = MaterialTheme.colorScheme.errorContainer,
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Row(
@@ -425,7 +437,7 @@ private fun LocateServerContent(
 
         Spacer(Modifier.height(24.dp))
 
-        // Discovered Servers Card List
+        // Discovered Servers Card List — OFFERED FIRST TO THE USER
         Text(
             text = "Nearby Servers",
             style = MaterialTheme.typography.titleMedium,
@@ -464,12 +476,10 @@ private fun LocateServerContent(
             ) {
                 discoveredServers.forEach { server ->
                     val serverHost = server.domain
-                    Card(
+                    Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
+                        color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Row(
                             modifier = Modifier
@@ -524,20 +534,140 @@ private fun LocateServerContent(
 
         Spacer(Modifier.height(28.dp))
 
-        // Manual Connection Form
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        // Advanced Options Accordion Header
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showAdvancedSettings = !showAdvancedSettings }
         ) {
-            Column(modifier = Modifier.padding(20.dp)) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Advanced Options",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Manual connection parameters & ADB developer options",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = if (showAdvancedSettings) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (showAdvancedSettings) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Advanced Options Collapsible Body
+        AnimatedVisibility(
+            visible = showAdvancedSettings,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp)
+            ) {
+                // Development & ADB Testing Section
+                Surface(
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Development & ADB Testing",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(Modifier.height(4.dp))
+
+                        Text(
+                            text = "Connect to a server running on your computer via USB reverse tunnel or Android emulator.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        Spacer(Modifier.height(14.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = onConnectAdb,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                            ) {
+                                Text("ADB (127.0.0.1)", style = MaterialTheme.typography.labelSmall)
+                            }
+
+                            OutlinedButton(
+                                onClick = onConnectEmulator,
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                            ) {
+                                Text("Emulator (10.0.2.2)", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+
+                        Spacer(Modifier.height(10.dp))
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.background,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    clipboardManager.setText(AnnotatedString("adb reverse tcp:23342 tcp:23342"))
+                                    Toast.makeText(context, "Copied ADB reverse command", Toast.LENGTH_SHORT).show()
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "adb reverse tcp:23342 tcp:23342",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "COPY",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(20.dp))
+
+                // Manual Connection Parameters
                 Text(
                     text = "Manual Parameters",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.fillMaxWidth()
                 )
 
                 Spacer(Modifier.height(12.dp))
@@ -554,7 +684,9 @@ private fun LocateServerContent(
                             tlsInput = true
                         },
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
                     ) {
                         Text("kosh.local", style = MaterialTheme.typography.labelSmall)
                     }
@@ -565,7 +697,9 @@ private fun LocateServerContent(
                             tlsInput = true
                         },
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
                     ) {
                         Text("192.168.1.5", style = MaterialTheme.typography.labelSmall)
                     }
@@ -576,7 +710,9 @@ private fun LocateServerContent(
                             tlsInput = false
                         },
                         shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
                     ) {
                         Text("Localhost", style = MaterialTheme.typography.labelSmall)
                     }
@@ -739,7 +875,11 @@ private fun ProbingServerContent(
 }
 
 /**
- * Step 2: Fingerprint Verification Content showing 12 BIP-39 SAS words, SHA-256 hex, and verification actions.
+ * Step 2: Fingerprint Verification Content.
+ *
+ * Prominently presents "Scan Server QR Code" as the primary action.
+ * BIP-39 SAS 12-words, SHA-256 fingerprint, and "Fingerprint matches" button
+ * are tucked behind a collapsible "Manual Verification" accordion.
  */
 @Suppress("DEPRECATION")
 @Composable
@@ -751,6 +891,7 @@ private fun VerificationContent(
 ) {
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
+    var showManualVerification by rememberSaveable { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -809,23 +950,79 @@ private fun VerificationContent(
             }
         }
 
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(24.dp))
 
-        if (probeResult.isTls && probeResult.sasWords.isNotEmpty()) {
-            // BIP-39 SAS 12-Word Verification Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                ),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        // Primary Action: Scan QR Code (Offered first!)
+        Button(
+            onClick = onScanQr,
+            shape = RoundedCornerShape(28.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.QrCodeScanner,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Text("Scan Server QR Code", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Manual Verification Accordion Toggle
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showManualVerification = !showManualVerification }
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Column(modifier = Modifier.padding(20.dp)) {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Verification Words",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        text = "Manual Verification",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Verify 12 words & SHA-256 fingerprint manually",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    imageVector = if (showManualVerification) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = if (showManualVerification) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Manual Verification Collapsible Body
+        AnimatedVisibility(
+            visible = showManualVerification,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp)
+            ) {
+                if (probeResult.isTls && probeResult.sasWords.isNotEmpty()) {
+                    // BIP-39 SAS 12-Word Verification Section
+                    Text(
+                        text = "VERIFICATION WORDS",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.primary
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -834,7 +1031,7 @@ private fun VerificationContent(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
 
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(12.dp))
 
                     val rows = Bip39Sas.formatRows(probeResult.sasWords)
                     rows.forEachIndexed { rowIndex, rowWords ->
@@ -842,30 +1039,32 @@ private fun VerificationContent(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 3.dp),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             rowWords.forEachIndexed { colIndex, word ->
                                 val wordNum = rowIndex * 4 + colIndex + 1
                                 Surface(
                                     modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(10.dp),
+                                    shape = RoundedCornerShape(12.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant
                                 ) {
                                     Column(
-                                        modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                        modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
-                                            text = "$wordNum",
+                                            text = "%02d".format(wordNum),
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                            fontSize = 9.sp
+                                            color = MaterialTheme.colorScheme.primary,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 10.sp
                                         )
                                         Text(
                                             text = word,
                                             style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.SemiBold,
+                                            fontWeight = FontWeight.Bold,
                                             fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1
                                         )
                                     }
@@ -876,9 +1075,9 @@ private fun VerificationContent(
 
                     Spacer(Modifier.height(16.dp))
 
-                    // Fingerprint Hex Display with copy
+                    // Fingerprint Hex Display with monospaced body and clear heading distinction
                     Surface(
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -887,85 +1086,70 @@ private fun VerificationContent(
                                 Toast.makeText(context, "Fingerprint copied", Toast.LENGTH_SHORT).show()
                             }
                     ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "SHA-256 Fingerprint",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = probeResult.fingerprintHex.chunked(8).joinToString(" "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    maxLines = 2
-                                )
-                            }
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text(
+                                text = "SHA-256 FINGERPRINT",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = probeResult.fingerprintHex.chunked(8).joinToString(" "),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 2
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+
+                    // Action: Manual Confirm (Inside Manual Verification Accordion)
+                    FilledTonalButton(
+                        onClick = onConfirm,
+                        shape = RoundedCornerShape(28.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("Fingerprint Matches, Continue", fontWeight = FontWeight.SemiBold)
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "Unencrypted Connection",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = "This server does not have TLS enabled. Plaintext HTTP does not support certificate fingerprint verification.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
                 }
             }
-        } else {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Column(modifier = Modifier.padding(20.dp)) {
-                    Text(
-                        text = "Unencrypted Connection",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "This server does not have TLS enabled. Plaintext HTTP does not support certificate fingerprint verification.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
         }
 
-        Spacer(Modifier.height(24.dp))
-
-        // Action: Scan QR Code
-        Button(
-            onClick = onScanQr,
-            shape = RoundedCornerShape(28.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-        ) {
-            Text("Scan Server QR Code", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        // Action: Manual Confirm (SAS Words match)
-        FilledTonalButton(
-            onClick = onConfirm,
-            shape = RoundedCornerShape(28.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Check,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-            Text("Fingerprint Matches, Continue", fontWeight = FontWeight.SemiBold)
-        }
-
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(16.dp))
 
         // Action: Choose Another Server
         TextButton(

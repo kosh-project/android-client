@@ -4,6 +4,110 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
+ * Wire-level JSON request body for opening an ephemeral pairing mailbox (`POST /api/auth/mailbox/open`).
+ *
+ * @property pubTemp 64-character hexadecimal string representing the caller's 32-byte X25519 public key.
+ */
+@Serializable
+data class MailboxOpenRequest(
+    @SerialName("pub_temp")
+    val pubTemp: String
+) {
+    init {
+        require(pubTemp.length == 64) {
+            "pub_temp must be exactly 64 hex characters (32 bytes), got ${pubTemp.length}"
+        }
+    }
+}
+
+/**
+ * Wire-level JSON response returned by `POST /api/auth/mailbox/open`.
+ *
+ * @property mailboxId 8-character lowercase Crockford Base32 identifier.
+ * @property pollingToken 64-character hexadecimal polling authorization token.
+ * @property expiresIn Time-to-live in seconds before the mailbox expires in server RAM.
+ */
+@Serializable
+data class MailboxOpenResponse(
+    @SerialName("mailbox_id")
+    val mailboxId: String,
+
+    @SerialName("polling_token")
+    val pollingToken: String,
+
+    @SerialName("expires_in")
+    val expiresIn: Long
+)
+
+/**
+ * Wire-level JSON request body for joining an offered mailbox (`POST /api/auth/mailbox/{id}/join`).
+ *
+ * @property pubTemp 64-character hexadecimal string representing the caller's 32-byte X25519 public key.
+ */
+@Serializable
+data class MailboxJoinRequest(
+    @SerialName("pub_temp")
+    val pubTemp: String
+) {
+    init {
+        require(pubTemp.length == 64) {
+            "pub_temp must be exactly 64 hex characters (32 bytes), got ${pubTemp.length}"
+        }
+    }
+}
+
+/**
+ * Wire-level JSON response returned by `POST /api/auth/mailbox/{id}/join`.
+ *
+ * @property token 64-character hexadecimal polling authorization token.
+ */
+@Serializable
+data class MailboxJoinResponse(
+    val token: String
+)
+
+/**
+ * Wire-level JSON response returned by `GET /api/v1/devices/mailbox/{id}/status`.
+ *
+ * @property status Current mailbox status ("waiting" or "ready").
+ * @property pubTemp 64-character hexadecimal peer ephemeral public key if ready.
+ */
+@Serializable
+data class MailboxStatusResponse(
+    val status: String,
+
+    @SerialName("pub_temp")
+    val pubTemp: String? = null
+) {
+    val isWaiting: Boolean
+        get() = status.equals("waiting", ignoreCase = true)
+
+    val isReady: Boolean
+        get() = status.equals("ready", ignoreCase = true) && !pubTemp.isNullOrBlank()
+}
+
+/**
+ * Wire-level JSON response returned by `POST /api/v1/devices/link-ticket`.
+ *
+ * @property ticket 64-character hexadecimal single-use registration ticket.
+ * @property registrationTicket Protocol alias for specification compatibility.
+ * @property expiresIn Time-to-live in seconds before the ticket expires in server RAM.
+ */
+@Serializable
+data class LinkTicketResponse(
+    val ticket: String = "",
+
+    @SerialName("registration_ticket")
+    val registrationTicket: String = "",
+
+    @SerialName("expires_in")
+    val expiresIn: Long = 300L
+) {
+    val effectiveTicket: String
+        get() = ticket.ifEmpty { registrationTicket }
+}
+
+/**
  * Wire-level JSON response returned by `POST /api/v1/devices/mailbox`.
  *
  * The server allocates an ephemeral rendezvous mailbox in RAM with a 300-second TTL.
@@ -90,14 +194,15 @@ sealed interface MailboxPollState {
 }
 
 /**
- * Portable payload encoded into a QR code displayed on the receiver device
- * during device-to-device pairing.
+ * Portable payload encoded into a QR code displayed during device-to-device pairing.
  *
  * @property mailboxId 8-character lowercase Crockford Base32 mailbox code.
- * @property publicKeyHex 64-hex-character string representing receiver's 32-byte X25519 public key.
+ * @property publicKeyHex Optional 64-hex-character string representing ephemeral X25519 public key.
  * @property host Optional server host name or IP address.
  * @property port Optional server port number.
  * @property fingerprint Optional SHA-256 certificate fingerprint for TLS pinning.
+ * @property token Optional token passed in local pairing environments.
+ * @property mode Optional pairing mode ("receiver" for Flow A, "sender" for Flow B).
  */
 @Serializable
 data class PairingQrPayload(
@@ -105,10 +210,12 @@ data class PairingQrPayload(
     val mailboxId: String,
 
     @SerialName("public_key")
-    val publicKeyHex: String,
+    val publicKeyHex: String? = null,
 
     val host: String? = null,
     val port: Int? = null,
-    val fingerprint: String? = null
+    val fingerprint: String? = null,
+    val token: String? = null,
+    val mode: String? = null
 )
 

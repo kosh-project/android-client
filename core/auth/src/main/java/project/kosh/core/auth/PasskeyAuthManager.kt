@@ -2,20 +2,13 @@ package project.kosh.core.auth
 
 import android.content.Context
 import android.os.Build
-import androidx.credentials.CreatePublicKeyCredentialRequest
-import androidx.credentials.CreatePublicKeyCredentialResponse
-import androidx.credentials.CredentialManager
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.GetPublicKeyCredentialOption
-import androidx.credentials.PublicKeyCredential
-import androidx.credentials.exceptions.CreateCredentialCancellationException
-import androidx.credentials.exceptions.CreateCredentialException
-import androidx.credentials.exceptions.GetCredentialCancellationException
-import androidx.credentials.exceptions.GetCredentialException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import project.kosh.core.auth.fido.BiometricCancelledException
+import project.kosh.core.auth.fido.InternalFidoAuthenticator
 import project.kosh.core.crypto.AesGcmEnvelope
 import project.kosh.core.crypto.IdentityManager
 import project.kosh.core.crypto.MasterVaultKey
@@ -90,7 +83,7 @@ sealed interface PasskeyLoginResult {
  *
  * Coordinates interactions between:
  * 1. [PasskeyClient]: Network communication with Kosh Axum server endpoints.
- * 2. [CredentialManager]: Android platform credential provider coordinating biometrics and StrongBox enclave.
+ * 2. [InternalFidoAuthenticator]: Native hardware-enclave FIDO2 authenticator providing WebAuthn operations.
  * 3. [SessionManager]: Hardware-backed keystore persistence for bearer tokens and root vault credentials.
  * 4. [IdentityManager]: Argon2id key derivation and vault envelope unwrapping.
  *
@@ -103,9 +96,16 @@ class PasskeyAuthManager @Inject constructor(
     private val passkeyClient: PasskeyClient,
     private val sessionManager: SessionManager,
     private val identityManager: IdentityManager,
-    private val credentialManager: CredentialManager
+    private val internalAuthenticator: InternalFidoAuthenticator
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Checks whether this device has any enrolled FIDO2 passkeys stored in the hardware authenticator.
+     */
+    fun hasEnrolledPasskeys(): Boolean {
+        return internalAuthenticator.getAllCredentials().isNotEmpty()
+    }
 
     /**
      * Enrolls a new biometric passkey for the currently authenticated account.
@@ -113,7 +113,7 @@ class PasskeyAuthManager @Inject constructor(
      * 1. Confirms presence of an active session token in [SessionManager].
      * 2. Initiates passkey registration ceremony with the server via [PasskeyClient.startRegistration].
      * 3. Zero-Knowledge encrypts the device nickname using [MasterVaultKey] if available.
-     * 4. Prompts the user for biometric authorization via Android [CredentialManager.createCredential].
+     * 4. Executes the registration ceremony via [InternalFidoAuthenticator.registerCredential].
      * 5. Submits the verified authenticator attestation response to `/api/v1/auth/passkey/register/finish`.
      *
      * @param activityContext Android Activity context required to render the biometric dialog.
@@ -133,6 +133,15 @@ class PasskeyAuthManager @Inject constructor(
             is NetworkResult.Failure -> return@withContext PasskeyRegisterResult.Error(startResult.userMessage, startResult.cause)
         }
 
+        try {
+            val root = json.parseToJsonElement(challengeResponse.publicKeyJson)
+            if (root !is JsonObject) {
+                return@withContext PasskeyRegisterResult.Error("Invalid registration challenge: Expected JSON object")
+            }
+        } catch (e: Exception) {
+            return@withContext PasskeyRegisterResult.Error("Invalid registration challenge: ${e.message}", e)
+        }
+
         val masterKey = sessionManager.getVaultKey()
         val nickname = (deviceNickname?.trim()?.ifEmpty { null } ?: getDefaultDeviceName()).take(200)
         val encryptedMetadata = if (masterKey != null) {
@@ -145,30 +154,17 @@ class PasskeyAuthManager @Inject constructor(
             ""
         }
 
-        val createRequest = try {
-            CreatePublicKeyCredentialRequest(requestJson = challengeResponse.publicKeyJson)
-        } catch (e: Exception) {
-            return@withContext PasskeyRegisterResult.Error("Invalid registration challenge: ${e.message}", e)
-        }
-
-        val targetContext = activityContext.findActivity()
-        val createResponse = try {
-            credentialManager.createCredential(targetContext, createRequest)
-        } catch (_: CreateCredentialCancellationException) {
-            return@withContext PasskeyRegisterResult.Cancelled
-        } catch (e: CreateCredentialException) {
-            return@withContext PasskeyRegisterResult.Error(e.message ?: "Passkey creation failed", e)
-        } catch (e: Exception) {
-            return@withContext PasskeyRegisterResult.Error(e.message ?: "Unexpected passkey creation error", e)
-        }
-
-        val credResponse = createResponse as? CreatePublicKeyCredentialResponse
-            ?: return@withContext PasskeyRegisterResult.Error("Unexpected response type from CredentialManager: ${createResponse.javaClass.simpleName}")
-
         val credentialElement = try {
-            json.parseToJsonElement(credResponse.registrationResponseJson)
+            internalAuthenticator.registerCredential(activityContext, challengeResponse)
+        } catch (_: BiometricCancelledException) {
+            return@withContext PasskeyRegisterResult.Cancelled
         } catch (e: Exception) {
-            return@withContext PasskeyRegisterResult.Error("Failed to parse authenticator attestation: ${e.message}", e)
+            val msg = if (e.message?.contains("challenge", ignoreCase = true) == true) {
+                "Invalid registration challenge: ${e.message}"
+            } else {
+                e.message ?: "Passkey registration failed"
+            }
+            return@withContext PasskeyRegisterResult.Error(msg, e)
         }
 
         val finishRequest = PasskeyRegisterFinishRequest(
@@ -185,10 +181,84 @@ class PasskeyAuthManager @Inject constructor(
     }
 
     /**
+     * Enrolls a new biometric passkey using an ephemeral single-use registration ticket minted during device pairing.
+     *
+     * Enables a newly paired device to enroll hardware-backed biometric passkeys without requiring passwords or pre-existing session tokens.
+     *
+     * 1. Fetches registration challenge from `/api/auth/passkey/register/start` using [registrationTicket].
+     * 2. Prompts user biometric verification via [InternalFidoAuthenticator.registerCredential].
+     * 3. Zero-Knowledge encrypts device nickname under [MasterVaultKey] stored in [SessionManager].
+     * 4. Submits authenticator attestation to `/api/auth/passkey/register/finish`, consuming the registration ticket.
+     *
+     * @param activityContext Android Activity context required to render the biometric dialog.
+     * @param registrationTicket 64-character hexadecimal single-use registration ticket.
+     * @param deviceNickname Optional user-defined device label.
+     * @return [PasskeyRegisterResult.Success], [PasskeyRegisterResult.Cancelled], or [PasskeyRegisterResult.Error].
+     */
+    suspend fun registerPasskeyWithTicket(
+        activityContext: Context,
+        registrationTicket: String,
+        deviceNickname: String? = null
+    ): PasskeyRegisterResult = withContext(Dispatchers.IO) {
+        val startResult = passkeyClient.startRegistrationWithTicket(registrationTicket)
+        val challengeResponse = when (startResult) {
+            is NetworkResult.Success -> startResult.data
+            is NetworkResult.Failure -> return@withContext PasskeyRegisterResult.Error(startResult.userMessage, startResult.cause)
+        }
+
+        try {
+            val root = json.parseToJsonElement(challengeResponse.publicKeyJson)
+            if (root !is JsonObject) {
+                return@withContext PasskeyRegisterResult.Error("Invalid registration challenge: Expected JSON object")
+            }
+        } catch (e: Exception) {
+            return@withContext PasskeyRegisterResult.Error("Invalid registration challenge: ${e.message}", e)
+        }
+
+        val masterKey = sessionManager.getVaultKey()
+        val nickname = (deviceNickname?.trim()?.ifEmpty { null } ?: getDefaultDeviceName()).take(200)
+        val encryptedMetadata = if (masterKey != null) {
+            try {
+                encryptMetadata(nickname, masterKey)
+            } catch (e: Exception) {
+                ""
+            }
+        } else {
+            ""
+        }
+
+        val credentialElement = try {
+            internalAuthenticator.registerCredential(activityContext, challengeResponse)
+        } catch (_: BiometricCancelledException) {
+            return@withContext PasskeyRegisterResult.Cancelled
+        } catch (e: Exception) {
+            val msg = if (e.message?.contains("challenge", ignoreCase = true) == true) {
+                "Invalid registration challenge: ${e.message}"
+            } else {
+                e.message ?: "Passkey registration failed"
+            }
+            return@withContext PasskeyRegisterResult.Error(msg, e)
+        }
+
+        val finishRequest = PasskeyRegisterFinishRequest(
+            challengeId = challengeResponse.challengeId,
+            credential = credentialElement,
+            encryptedMetadata = encryptedMetadata,
+            ticket = registrationTicket
+        )
+
+        val finishResult = passkeyClient.finishRegistrationWithTicket(finishRequest, registrationTicket)
+        when (finishResult) {
+            is NetworkResult.Success -> PasskeyRegisterResult.Success
+            is NetworkResult.Failure -> PasskeyRegisterResult.Error(finishResult.userMessage, finishResult.cause)
+        }
+    }
+
+    /**
      * Executes discoverable (resident key / passwordless) passkey authentication.
      *
      * 1. Fetches an ephemeral discoverable challenge from `/api/auth/passkey/login/start`.
-     * 2. Prompts user biometric verification via Android [CredentialManager.getCredential].
+     * 2. Prompts user biometric verification via [InternalFidoAuthenticator.authenticateCredential].
      * 3. Submits authenticator assertion to `/api/auth/passkey/login/finish`.
      * 4. Persists the returned 118-byte bearer session token in [SessionManager].
      * 5. If [passphrase] is supplied, unwraps and stores the 32-byte [MasterVaultKey].
@@ -207,31 +277,26 @@ class PasskeyAuthManager @Inject constructor(
             is NetworkResult.Failure -> return@withContext PasskeyLoginResult.Error(startResult.userMessage, startResult.cause)
         }
 
-        val option = try {
-            GetPublicKeyCredentialOption(requestJson = challengeResponse.publicKeyJson)
+        try {
+            val root = json.parseToJsonElement(challengeResponse.publicKeyJson)
+            if (root !is JsonObject) {
+                return@withContext PasskeyLoginResult.Error("Invalid login challenge: Expected JSON object")
+            }
         } catch (e: Exception) {
             return@withContext PasskeyLoginResult.Error("Invalid login challenge: ${e.message}", e)
         }
-        val getRequest = GetCredentialRequest(listOf(option))
-
-        val targetContext = activityContext.findActivity()
-        val getResponse = try {
-            credentialManager.getCredential(targetContext, getRequest)
-        } catch (_: GetCredentialCancellationException) {
-            return@withContext PasskeyLoginResult.Cancelled
-        } catch (e: GetCredentialException) {
-            return@withContext PasskeyLoginResult.Error(e.message ?: "Biometric passkey sign-in failed", e)
-        } catch (e: Exception) {
-            return@withContext PasskeyLoginResult.Error(e.message ?: "Unexpected sign-in error", e)
-        }
-
-        val pubKeyCred = getResponse.credential as? PublicKeyCredential
-            ?: return@withContext PasskeyLoginResult.Error("Unexpected credential type returned: ${getResponse.credential.type}")
 
         val credentialElement = try {
-            json.parseToJsonElement(pubKeyCred.authenticationResponseJson)
+            internalAuthenticator.authenticateCredential(activityContext, challengeResponse)
+        } catch (_: BiometricCancelledException) {
+            return@withContext PasskeyLoginResult.Cancelled
         } catch (e: Exception) {
-            return@withContext PasskeyLoginResult.Error("Failed to parse authenticator assertion: ${e.message}", e)
+            val msg = if (e.message?.contains("challenge", ignoreCase = true) == true) {
+                "Invalid login challenge: ${e.message}"
+            } else {
+                e.message ?: "Biometric passkey sign-in failed"
+            }
+            return@withContext PasskeyLoginResult.Error(msg, e)
         }
 
         val finishRequest = PasskeyLoginFinishRequest(
@@ -315,6 +380,7 @@ class PasskeyAuthManager @Inject constructor(
      * @param token Optional explicit bearer token.
      */
     suspend fun deletePasskey(credentialId: String, token: String? = null): NetworkResult<Unit> {
+        internalAuthenticator.deleteCredential(credentialId)
         return passkeyClient.deletePasskey(credentialId, token)
     }
 
@@ -438,14 +504,5 @@ class PasskeyAuthManager @Inject constructor(
             result[i / 2] = ((d1 shl 4) or d2).toByte()
         }
         return result
-    }
-
-    private fun Context.findActivity(): Context {
-        var ctx: Context? = this
-        while (ctx is android.content.ContextWrapper) {
-            if (ctx is android.app.Activity) return ctx
-            ctx = ctx.baseContext
-        }
-        return this
     }
 }

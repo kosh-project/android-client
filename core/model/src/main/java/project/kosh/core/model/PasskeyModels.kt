@@ -75,7 +75,8 @@ data class PasskeyRegisterFinishRequest(
     val challengeId: String,
     val credential: JsonElement,
     @SerialName("encrypted_metadata")
-    val encryptedMetadata: String = ""
+    val encryptedMetadata: String = "",
+    val ticket: String? = null
 )
 
 /**

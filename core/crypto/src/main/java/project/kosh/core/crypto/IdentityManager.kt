@@ -114,10 +114,11 @@ class IdentityManager @Inject constructor() {
     }
 
     /**
-     * Normalizes a recovery phrase by trimming whitespace, lowercasing, and collapsing spaces.
+     * Normalizes a recovery phrase by stripping numbering, punctuation, trimming whitespace,
+     * and collapsing into canonical single-space-separated BIP-39 words.
      */
     fun normalizeRecoveryPhrase(phrase: String): String =
-        phrase.trim().lowercase().split("\\s+".toRegex()).filter { it.isNotEmpty() }.joinToString(" ")
+        Bip39Sas.normalizePhrase(phrase)
 
     /**
      * Derives an [AuthCredential] pair from a user's [recoveryPhrase].

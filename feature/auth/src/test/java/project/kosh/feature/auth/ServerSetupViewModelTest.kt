@@ -352,4 +352,45 @@ class ServerSetupViewModelTest {
         assertFalse(state.isVerified)
         assertFalse(state.showMismatchDialog)
     }
+
+    @Test
+    fun `connectAdb probes localhost with autoProbe and transitions to Verification`() = runTest {
+        val adbProbeResult = sampleProbeResult.copy(host = "127.0.0.1")
+        coEvery { certificateProber.autoProbe("127.0.0.1", 23342) } returns Result.success(adbProbeResult)
+
+        viewModel.connectAdb()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.stage is ServerSetupStage.Verification)
+        assertEquals("127.0.0.1", (state.stage as ServerSetupStage.Verification).result.host)
+        assertNull(state.probeError)
+    }
+
+    @Test
+    fun `connectAdb failure sets informative adb error message`() = runTest {
+        coEvery {
+            certificateProber.autoProbe("127.0.0.1", 23342)
+        } returns Result.failure(java.net.ConnectException("Connection refused"))
+
+        viewModel.connectAdb()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertEquals(ServerSetupStage.Locating, state.stage)
+        assertTrue(state.probeError!!.contains("adb reverse tcp:23342 tcp:23342"))
+    }
+
+    @Test
+    fun `connectEmulator probes emulator loopback with autoProbe and transitions to Verification`() = runTest {
+        val emulatorProbeResult = sampleProbeResult.copy(host = "10.0.2.2")
+        coEvery { certificateProber.autoProbe("10.0.2.2", 23342) } returns Result.success(emulatorProbeResult)
+
+        viewModel.connectEmulator()
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state.stage is ServerSetupStage.Verification)
+        assertEquals("10.0.2.2", (state.stage as ServerSetupStage.Verification).result.host)
+    }
 }

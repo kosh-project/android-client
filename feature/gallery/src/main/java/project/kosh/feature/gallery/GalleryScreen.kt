@@ -111,7 +111,7 @@ fun GalleryScreen(
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Kosh Vault",
+                                text = "Vault",
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold
                             )

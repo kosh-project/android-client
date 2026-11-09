@@ -182,4 +182,26 @@ class CertificateProber @Inject constructor() {
                 )
             }
         }
+
+    /**
+     * Automatically probes the server endpoint by first attempting a TLS connection,
+     * and seamlessly falling back to unencrypted HTTP if TLS is not active.
+     * Useful for local development and ADB reverse debugging where server mode may vary.
+     *
+     * @param host Target host name or IPv4 address (e.g. 127.0.0.1, 10.0.2.2).
+     * @param port Target TCP port.
+     * @return [Result] enclosing [CertificateProbeResult] on success, or an exception on failure.
+     */
+    suspend fun autoProbe(host: String, port: Int): Result<CertificateProbeResult> =
+        withContext(Dispatchers.IO) {
+            val tlsResult = probeServer(host, port, useTls = true)
+            if (tlsResult.isSuccess) {
+                return@withContext tlsResult
+            }
+            val httpResult = probeServer(host, port, useTls = false)
+            if (httpResult.isSuccess) {
+                return@withContext httpResult
+            }
+            tlsResult
+        }
 }

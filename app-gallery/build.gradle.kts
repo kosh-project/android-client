@@ -21,7 +21,19 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("sharedDebug") {
+            storeFile = file("kosh-dev.keystore")
+            storePassword = System.getenv("DEV_KEY_PASS") ?: "android"
+            keyAlias = "koshdebug"
+            keyPassword = System.getenv("DEV_KEY_PASS") ?: "android"
+        }
+    }
+
     buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("sharedDebug")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

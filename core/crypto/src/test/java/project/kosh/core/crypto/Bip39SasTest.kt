@@ -141,4 +141,25 @@ class Bip39SasTest {
         // Empty
         assertFalse(Bip39Sas.isValidPhrase(""))
     }
+
+    @Test
+    fun `extractWords and normalizePhrase strip numbering prefixes, commas, and newlines`() {
+        val numberedPhrase = """
+            fuel airport foil harvest day mail soup ahead recipe vague nasty
+            12. light 13. casino 14. produce 15. legal 16. zoo
+            17. abandon 18. art 19. bubble 20. cactus 21. dial 22. eager 23. frame 24. galaxy
+        """.trimIndent()
+
+        val words = Bip39Sas.extractWords(numberedPhrase)
+        assertEquals(24, words.size)
+        assertEquals("fuel", words[0])
+        assertEquals("nasty", words[10])
+        assertEquals("light", words[11])
+        assertEquals("casino", words[12])
+        assertEquals("produce", words[13])
+        assertEquals("galaxy", words[23])
+
+        val normalized = Bip39Sas.normalizePhrase(numberedPhrase)
+        assertTrue(Bip39Sas.isValidRecoveryPhrase(normalized))
+    }
 }

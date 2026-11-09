@@ -1,15 +1,6 @@
 package project.kosh.core.auth
 
 import android.content.Context
-import androidx.credentials.CreatePublicKeyCredentialResponse
-import androidx.credentials.CredentialManager
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.GetCredentialResponse
-import androidx.credentials.PublicKeyCredential
-import androidx.credentials.exceptions.CreateCredentialCancellationException
-import androidx.credentials.exceptions.CreateCredentialCustomException
-import androidx.credentials.exceptions.GetCredentialCancellationException
-import androidx.credentials.exceptions.GetCredentialCustomException
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -27,6 +18,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import project.kosh.core.auth.fido.BiometricCancelledException
+import project.kosh.core.auth.fido.FidoAuthenticationException
+import project.kosh.core.auth.fido.InternalFidoAuthenticator
 import project.kosh.core.crypto.AesGcmEnvelope
 import project.kosh.core.crypto.IdentityManager
 import project.kosh.core.crypto.MasterVaultKey
@@ -44,7 +38,7 @@ class PasskeyAuthManagerTest {
     private lateinit var passkeyClient: PasskeyClient
     private lateinit var sessionManager: SessionManager
     private lateinit var identityManager: IdentityManager
-    private lateinit var credentialManager: CredentialManager
+    private lateinit var internalAuthenticator: InternalFidoAuthenticator
     private lateinit var passkeyAuthManager: PasskeyAuthManager
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -54,14 +48,14 @@ class PasskeyAuthManagerTest {
         passkeyClient = mockk(relaxed = true)
         sessionManager = mockk(relaxed = true)
         identityManager = mockk(relaxed = true)
-        credentialManager = mockk(relaxed = true)
+        internalAuthenticator = mockk(relaxed = true)
 
         passkeyAuthManager = PasskeyAuthManager(
             context = context,
             passkeyClient = passkeyClient,
             sessionManager = sessionManager,
             identityManager = identityManager,
-            credentialManager = credentialManager
+            internalAuthenticator = internalAuthenticator
         )
     }
 
@@ -249,10 +243,8 @@ class PasskeyAuthManagerTest {
                 "type": "public-key"
             }
         """.trimIndent()
-        val mockCreateResponse = mockk<CreatePublicKeyCredentialResponse> {
-            every { registrationResponseJson } returns dummyAttestationJson
-        }
-        coEvery { credentialManager.createCredential(context, any()) } returns mockCreateResponse
+        val dummyCredElement = json.parseToJsonElement(dummyAttestationJson)
+        coEvery { internalAuthenticator.registerCredential(context, any()) } returns dummyCredElement
 
         val finishSlot = slot<PasskeyRegisterFinishRequest>()
         coEvery {
@@ -279,22 +271,22 @@ class PasskeyAuthManagerTest {
         coEvery { passkeyClient.startRegistration(any()) } returns NetworkResult.Success(challengeResponse)
 
         coEvery {
-            credentialManager.createCredential(context, any())
-        } throws CreateCredentialCancellationException("User dismissed biometric dialog")
+            internalAuthenticator.registerCredential(context, any())
+        } throws BiometricCancelledException("User dismissed biometric dialog")
 
         val result = passkeyAuthManager.registerPasskey(context, "Pixel 8")
         assertEquals(PasskeyRegisterResult.Cancelled, result)
     }
 
     @Test
-    fun `registerPasskey returns Error when CredentialManager throws exception`() = runBlocking {
+    fun `registerPasskey returns Error when authenticator throws exception`() = runBlocking {
         every { sessionManager.getToken() } returns "active_token"
         val challengeResponse = createSampleRegistrationChallenge()
         coEvery { passkeyClient.startRegistration(any()) } returns NetworkResult.Success(challengeResponse)
 
         coEvery {
-            credentialManager.createCredential(context, any())
-        } throws CreateCredentialCustomException("android.credentials.TYPE_UNKNOWN", "Hardware error")
+            internalAuthenticator.registerCredential(context, any())
+        } throws FidoAuthenticationException("Hardware error")
 
         val result = passkeyAuthManager.registerPasskey(context, "Pixel 8")
         assertTrue(result is PasskeyRegisterResult.Error)
@@ -338,13 +330,8 @@ class PasskeyAuthManagerTest {
                 "type": "public-key"
             }
         """.trimIndent()
-        val mockPubKeyCred = mockk<PublicKeyCredential> {
-            every { authenticationResponseJson } returns dummyAssertionJson
-        }
-        val mockGetResponse = mockk<GetCredentialResponse> {
-            every { credential } returns mockPubKeyCred
-        }
-        coEvery { credentialManager.getCredential(context, any<GetCredentialRequest>()) } returns mockGetResponse
+        val dummyAssertionElement = json.parseToJsonElement(dummyAssertionJson)
+        coEvery { internalAuthenticator.authenticateCredential(context, any()) } returns dummyAssertionElement
 
         val authResponse = AuthResponse(
             token = "new_bearer_session_token_118",
@@ -388,13 +375,8 @@ class PasskeyAuthManagerTest {
                 "type": "public-key"
             }
         """.trimIndent()
-        val mockPubKeyCred = mockk<PublicKeyCredential> {
-            every { authenticationResponseJson } returns dummyAssertionJson
-        }
-        val mockGetResponse = mockk<GetCredentialResponse> {
-            every { credential } returns mockPubKeyCred
-        }
-        coEvery { credentialManager.getCredential(context, any<GetCredentialRequest>()) } returns mockGetResponse
+        val dummyAssertionElement = json.parseToJsonElement(dummyAssertionJson)
+        coEvery { internalAuthenticator.authenticateCredential(context, any()) } returns dummyAssertionElement
 
         val authResponse = AuthResponse(
             token = "session_token_123",
@@ -421,21 +403,21 @@ class PasskeyAuthManagerTest {
         coEvery { passkeyClient.startLogin() } returns NetworkResult.Success(challengeResponse)
 
         coEvery {
-            credentialManager.getCredential(context, any<GetCredentialRequest>())
-        } throws GetCredentialCancellationException("User cancelled biometric dialog")
+            internalAuthenticator.authenticateCredential(context, any())
+        } throws BiometricCancelledException("User cancelled biometric dialog")
 
         val result = passkeyAuthManager.loginWithPasskey(context)
         assertEquals(PasskeyLoginResult.Cancelled, result)
     }
 
     @Test
-    fun `loginWithPasskey returns Error when CredentialManager throws GetCredentialException`() = runBlocking {
+    fun `loginWithPasskey returns Error when authenticator throws exception`() = runBlocking {
         val challengeResponse = createSampleLoginChallenge()
         coEvery { passkeyClient.startLogin() } returns NetworkResult.Success(challengeResponse)
 
         coEvery {
-            credentialManager.getCredential(context, any<GetCredentialRequest>())
-        } throws GetCredentialCustomException("android.credentials.TYPE_UNKNOWN", "Biometric sensor hardware failure")
+            internalAuthenticator.authenticateCredential(context, any())
+        } throws FidoAuthenticationException("Biometric sensor hardware failure")
 
         val result = passkeyAuthManager.loginWithPasskey(context)
         assertTrue(result is PasskeyLoginResult.Error)
@@ -601,10 +583,8 @@ class PasskeyAuthManagerTest {
                 "type": "public-key"
             }
         """.trimIndent()
-        val mockCreateResponse = mockk<CreatePublicKeyCredentialResponse> {
-            every { registrationResponseJson } returns dummyAttestationJson
-        }
-        coEvery { credentialManager.createCredential(context, any()) } returns mockCreateResponse
+        val dummyCredElement = json.parseToJsonElement(dummyAttestationJson)
+        coEvery { internalAuthenticator.registerCredential(context, any()) } returns dummyCredElement
 
         val finishSlot = slot<PasskeyRegisterFinishRequest>()
         coEvery {
@@ -623,5 +603,112 @@ class PasskeyAuthManagerTest {
         val decrypted = passkeyAuthManager.decryptMetadata(capturedMetadata, masterKey)
         assertNotNull(decrypted)
         assertEquals("A".repeat(200), decrypted)
+    }
+
+    // --- Mode 2 Registration Ticket Tests ---
+
+    @Test
+    fun `registerPasskeyWithTicket succeeds and provides ticket to finish endpoint`() = runBlocking {
+        val testTicket = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val masterKey = MasterVaultKey.generate()
+        every { sessionManager.getVaultKey() } returns masterKey
+
+        val challengeResponse = createSampleRegistrationChallenge()
+        coEvery { passkeyClient.startRegistrationWithTicket(testTicket) } returns NetworkResult.Success(challengeResponse)
+
+        val dummyAttestationJson = """
+            {
+                "id": "cred_id_ticket",
+                "rawId": "raw_id_ticket",
+                "response": {
+                    "attestationObject": "attestation_bytes",
+                    "clientDataJSON": "client_data_bytes"
+                },
+                "type": "public-key"
+            }
+        """.trimIndent()
+        val dummyCredElement = json.parseToJsonElement(dummyAttestationJson)
+        coEvery { internalAuthenticator.registerCredential(context, any()) } returns dummyCredElement
+
+        val finishSlot = slot<PasskeyRegisterFinishRequest>()
+        coEvery {
+            passkeyClient.finishRegistrationWithTicket(capture(finishSlot), testTicket)
+        } returns NetworkResult.Success(Unit)
+
+        val result = passkeyAuthManager.registerPasskeyWithTicket(
+            activityContext = context,
+            registrationTicket = testTicket,
+            deviceNickname = "Paired Tablet"
+        )
+
+        assertTrue(result is PasskeyRegisterResult.Success)
+        assertTrue(finishSlot.isCaptured)
+        assertEquals(testTicket, finishSlot.captured.ticket)
+        assertEquals("reg_challenge_uuid_123", finishSlot.captured.challengeId)
+
+        val decryptedName = passkeyAuthManager.decryptMetadata(finishSlot.captured.encryptedMetadata, masterKey)
+        assertEquals("Paired Tablet", decryptedName)
+
+        coVerify(exactly = 1) { passkeyClient.startRegistrationWithTicket(testTicket) }
+        coVerify(exactly = 1) { passkeyClient.finishRegistrationWithTicket(any(), testTicket) }
+        masterKey.close()
+    }
+
+    @Test
+    fun `registerPasskeyWithTicket returns Cancelled when biometric authentication is dismissed`() = runBlocking {
+        val testTicket = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val challengeResponse = createSampleRegistrationChallenge()
+        coEvery { passkeyClient.startRegistrationWithTicket(testTicket) } returns NetworkResult.Success(challengeResponse)
+        coEvery { internalAuthenticator.registerCredential(context, any()) } throws BiometricCancelledException()
+
+        val result = passkeyAuthManager.registerPasskeyWithTicket(
+            activityContext = context,
+            registrationTicket = testTicket,
+            deviceNickname = "Paired Tablet"
+        )
+
+        assertTrue(result is PasskeyRegisterResult.Cancelled)
+        coVerify(exactly = 0) { passkeyClient.finishRegistrationWithTicket(any(), any()) }
+    }
+
+    @Test
+    fun `registerPasskeyWithTicket returns Error when start challenge fails`() = runBlocking {
+        val testTicket = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        coEvery {
+            passkeyClient.startRegistrationWithTicket(testTicket)
+        } returns NetworkResult.fromHttp(404, "Registration ticket not found or expired")
+
+        val result = passkeyAuthManager.registerPasskeyWithTicket(
+            activityContext = context,
+            registrationTicket = testTicket
+        )
+
+        assertTrue(result is PasskeyRegisterResult.Error)
+        val error = result as PasskeyRegisterResult.Error
+        assertTrue(error.message.contains("not found", ignoreCase = true))
+        coVerify(exactly = 0) { internalAuthenticator.registerCredential(any(), any()) }
+    }
+
+    @Test
+    fun `registerPasskeyWithTicket returns Error when finish registration fails`() = runBlocking {
+        val testTicket = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val challengeResponse = createSampleRegistrationChallenge()
+        coEvery { passkeyClient.startRegistrationWithTicket(testTicket) } returns NetworkResult.Success(challengeResponse)
+
+        val dummyCredElement = json.parseToJsonElement("""{"id":"test","rawId":"test","type":"public-key"}""")
+        coEvery { internalAuthenticator.registerCredential(context, any()) } returns dummyCredElement
+
+        coEvery {
+            passkeyClient.finishRegistrationWithTicket(any(), testTicket)
+        } returns NetworkResult.fromHttp(400, "Invalid attestation signature")
+
+        val result = passkeyAuthManager.registerPasskeyWithTicket(
+            activityContext = context,
+            registrationTicket = testTicket
+        )
+
+        assertTrue(result is PasskeyRegisterResult.Error)
+        val error = result as PasskeyRegisterResult.Error
+        assertTrue(error.message.contains("signature"))
     }
 }

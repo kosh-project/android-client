@@ -5,7 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -38,7 +38,7 @@ import javax.inject.Inject
  * Jetpack Compose UI with edge-to-edge system bar integration.
  */
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     /**
      * Injected cryptographic identity manager.
@@ -73,6 +73,7 @@ class MainActivity : ComponentActivity() {
 
         val startDestination = when {
             authRepo.isLoggedIn() -> "gallery"
+            authRepo.hasPendingRegistrationTicket() -> "setup"
             isServerVerified -> "auth"
             else -> "server_setup"
         }

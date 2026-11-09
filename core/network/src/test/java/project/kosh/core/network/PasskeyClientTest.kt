@@ -257,6 +257,66 @@ class PasskeyClientTest {
     }
 
     @Test
+    fun `startRegistrationWithTicket transmits ticket in Authorization and X-Registration-Ticket headers`() = runBlocking {
+        val testTicket = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        httpServer.createContext("/api/auth/passkey/register/start") { exchange ->
+            assertEquals("POST", exchange.requestMethod)
+            assertEquals("Bearer $testTicket", exchange.requestHeaders.getFirst("Authorization"))
+            assertEquals(testTicket, exchange.requestHeaders.getFirst("X-Registration-Ticket"))
+            val responseBody = """
+                {
+                    "challenge_id": "challenge_ticket_123",
+                    "challenge": {
+                        "publicKey": {
+                            "rp": { "name": "Kosh Storage Server", "id": "kosh.local" },
+                            "challenge": "ticket_challenge_bytes"
+                        }
+                    }
+                }
+            """.trimIndent()
+            exchange.responseHeaders.set("Content-Type", "application/json")
+            exchange.sendResponseHeaders(200, responseBody.toByteArray().size.toLong())
+            exchange.responseBody.use { it.write(responseBody.toByteArray()) }
+        }
+
+        val result = passkeyClient.startRegistrationWithTicket(testTicket)
+        assertTrue(result is NetworkResult.Success)
+        val data = (result as NetworkResult.Success).data
+        assertEquals("challenge_ticket_123", data.challengeId)
+        assertTrue(data.publicKeyJson.contains("ticket_challenge_bytes"))
+    }
+
+    @Test
+    fun `finishRegistrationWithTicket transmits ticket headers and payload on unauthenticated route`() = runBlocking {
+        val testTicket = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        val dummyCredential = buildJsonObject {
+            put("id", "ticket_cred_id")
+            put("type", "public-key")
+        }
+
+        httpServer.createContext("/api/auth/passkey/register/finish") { exchange ->
+            assertEquals("POST", exchange.requestMethod)
+            assertEquals("Bearer $testTicket", exchange.requestHeaders.getFirst("Authorization"))
+            assertEquals(testTicket, exchange.requestHeaders.getFirst("X-Registration-Ticket"))
+            val body = exchange.requestBody.bufferedReader().readText()
+            assertTrue(body.contains("challenge_ticket_123"))
+            assertTrue(body.contains("ticket_cred_id"))
+
+            exchange.sendResponseHeaders(201, -1)
+        }
+
+        val request = PasskeyRegisterFinishRequest(
+            challengeId = "challenge_ticket_123",
+            credential = dummyCredential,
+            encryptedMetadata = "aabbcc",
+            ticket = testTicket
+        )
+
+        val result = passkeyClient.finishRegistrationWithTicket(request, testTicket)
+        assertTrue(result is NetworkResult.Success)
+    }
+
+    @Test
     fun `live server startLogin succeeds against running kosh-server daemon`() = runBlocking {
         val liveHost = "127.0.0.1"
         val livePort = 23342

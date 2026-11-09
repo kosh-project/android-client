@@ -9,16 +9,37 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
+ * Container holding the decrypted secrets transferred during device pairing.
+ *
+ * @property registrationTicket 64-character hexadecimal single-use registration ticket for passkey enrollment.
+ * @property vaultKey Decrypted [MasterVaultKey] for zero-knowledge vault decrypting.
+ */
+data class PairingBundle(
+    val registrationTicket: String,
+    val vaultKey: MasterVaultKey
+) : AutoCloseable {
+    var isClosed: Boolean = false
+        private set
+
+    override fun close() {
+        if (!isClosed) {
+            vaultKey.close()
+            isClosed = true
+        }
+    }
+}
+
+/**
  * End-to-End Encrypted (E2EE) cryptographic engine for device-to-device pairing.
  *
  * Implements:
  * 1. RFC 7748 X25519 scalar multiplication and keypair generation.
  * 2. RFC 5869 HKDF-SHA256 key derivation.
- * 3. AES-256-GCM authenticated payload envelope packing (92 raw bytes / 184 hex characters).
+ * 3. AES-256-GCM authenticated payload envelope packing (compound 124 raw bytes / 248 hex characters).
  *
- * Wire payload format (184 hex characters):
+ * Wire payload format (248 hex characters):
  * ```text
- * [pk_tx: 32 bytes][IV / Nonce: 12 bytes][Ciphertext: 32 bytes][GCM Tag: 16 bytes]
+ * [pk_tx: 32 bytes][IV / Nonce: 12 bytes][Ciphertext: 64 bytes][GCM Tag: 16 bytes]
  * ```
  */
 object EcdhPairingCrypto {
@@ -28,9 +49,18 @@ object EcdhPairingCrypto {
     const val NONCE_SIZE = 12
     const val VAULT_KEY_SIZE = 32
     const val GCM_TAG_SIZE = 16
+
+    // Legacy 32-byte envelope constants (92 raw bytes / 184 hex characters)
     const val CIPHERTEXT_WITH_TAG_SIZE = VAULT_KEY_SIZE + GCM_TAG_SIZE // 48 bytes
     const val ENVELOPE_RAW_BYTES = PUBLIC_KEY_SIZE + NONCE_SIZE + CIPHERTEXT_WITH_TAG_SIZE // 92 bytes
     const val ENVELOPE_HEX_LENGTH = ENVELOPE_RAW_BYTES * 2 // 184 hex chars
+
+    // Compound pairing bundle constants (registration_ticket[32B] + MasterVaultKey[32B] -> 124 raw bytes / 248 hex chars)
+    const val REGISTRATION_TICKET_RAW_BYTES = 32
+    const val COMPOUND_PLAINTEXT_SIZE = REGISTRATION_TICKET_RAW_BYTES + VAULT_KEY_SIZE // 64 bytes
+    const val COMPOUND_CIPHERTEXT_WITH_TAG_SIZE = COMPOUND_PLAINTEXT_SIZE + GCM_TAG_SIZE // 80 bytes
+    const val COMPOUND_ENVELOPE_RAW_BYTES = PUBLIC_KEY_SIZE + NONCE_SIZE + COMPOUND_CIPHERTEXT_WITH_TAG_SIZE // 124 bytes
+    const val COMPOUND_ENVELOPE_HEX_LENGTH = COMPOUND_ENVELOPE_RAW_BYTES * 2 // 248 hex chars
 
     const val KDF_INFO = "kosh-device-pairing-v1"
     private const val AES_GCM_ALGORITHM = "AES/GCM/NoPadding"
@@ -145,9 +175,11 @@ object EcdhPairingCrypto {
         require(peerPublicKey.size == PUBLIC_KEY_SIZE) { "Peer public key must be $PUBLIC_KEY_SIZE bytes" }
 
         val txKeyPair = generateKeyPair(random)
+        var sharedSecret: ByteArray? = null
+        var symmetricKey: ByteArray? = null
         try {
-            val sharedSecret = computeSharedSecret(txKeyPair.privateKey, peerPublicKey)
-            val symmetricKey = derivePairingKey(sharedSecret)
+            sharedSecret = computeSharedSecret(txKeyPair.privateKey, peerPublicKey)
+            symmetricKey = derivePairingKey(sharedSecret)
 
             val iv = ByteArray(NONCE_SIZE)
             random.nextBytes(iv)
@@ -167,11 +199,10 @@ object EcdhPairingCrypto {
             System.arraycopy(iv, 0, payload, PUBLIC_KEY_SIZE, NONCE_SIZE)
             System.arraycopy(ciphertextAndTag, 0, payload, PUBLIC_KEY_SIZE + NONCE_SIZE, CIPHERTEXT_WITH_TAG_SIZE)
 
-            Arrays.fill(sharedSecret, 0.toByte())
-            Arrays.fill(symmetricKey, 0.toByte())
-
             return bytesToHex(payload)
         } finally {
+            sharedSecret?.let { Arrays.fill(it, 0.toByte()) }
+            symmetricKey?.let { Arrays.fill(it, 0.toByte()) }
             txKeyPair.close()
         }
     }
@@ -196,24 +227,150 @@ object EcdhPairingCrypto {
         val iv = rawPayload.copyOfRange(PUBLIC_KEY_SIZE, PUBLIC_KEY_SIZE + NONCE_SIZE)
         val ciphertextAndTag = rawPayload.copyOfRange(PUBLIC_KEY_SIZE + NONCE_SIZE, ENVELOPE_RAW_BYTES)
 
-        val sharedSecret = computeSharedSecret(receiverPrivateKey, txPublicKey)
-        val symmetricKey = derivePairingKey(sharedSecret)
-
+        var sharedSecret: ByteArray? = null
+        var symmetricKey: ByteArray? = null
+        var decryptedBytes: ByteArray? = null
         try {
+            sharedSecret = computeSharedSecret(receiverPrivateKey, txPublicKey)
+            symmetricKey = derivePairingKey(sharedSecret)
+
             val cipher = Cipher.getInstance(AES_GCM_ALGORITHM)
             val keySpec = SecretKeySpec(symmetricKey, "AES")
             val gcmSpec = GCMParameterSpec(128, iv)
             cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
 
-            val decryptedBytes = cipher.doFinal(ciphertextAndTag)
+            decryptedBytes = cipher.doFinal(ciphertextAndTag)
             require(decryptedBytes.size == VAULT_KEY_SIZE) {
                 "Decrypted key size mismatch: expected $VAULT_KEY_SIZE bytes, got ${decryptedBytes.size}"
             }
 
-            return MasterVaultKey(decryptedBytes)
+            val keyCopy = decryptedBytes.copyOf()
+            return MasterVaultKey(keyCopy)
         } finally {
-            Arrays.fill(sharedSecret, 0.toByte())
-            Arrays.fill(symmetricKey, 0.toByte())
+            sharedSecret?.let { Arrays.fill(it, 0.toByte()) }
+            symmetricKey?.let { Arrays.fill(it, 0.toByte()) }
+            decryptedBytes?.let { Arrays.fill(it, 0.toByte()) }
+            Arrays.fill(rawPayload, 0.toByte())
+        }
+    }
+
+    /**
+     * Encrypts a compound pairing bundle ([ticketHex] + [vaultKey]) using ephemeral X25519 agreement with [peerPublicKey].
+     *
+     * @param ticketHex 64-hex-character registration ticket string minted from the server.
+     * @param vaultKey Active [MasterVaultKey] to transmit.
+     * @param peerPublicKey The receiver's 32-byte public key.
+     * @param random Cryptographically secure RNG.
+     * @return 248-character hexadecimal wire envelope.
+     */
+    fun encryptCompoundPayload(
+        ticketHex: String,
+        vaultKey: MasterVaultKey,
+        peerPublicKey: ByteArray,
+        random: SecureRandom = SecureRandom()
+    ): String {
+        require(peerPublicKey.size == PUBLIC_KEY_SIZE) { "Peer public key must be $PUBLIC_KEY_SIZE bytes" }
+        val cleanTicket = ticketHex.trim()
+        require(cleanTicket.length == 64) { "ticketHex must be exactly 64 hex characters (32 bytes), got ${cleanTicket.length}" }
+
+        val ticketBytes = hexToBytes(cleanTicket)
+        val plaintext = ByteArray(COMPOUND_PLAINTEXT_SIZE)
+        System.arraycopy(ticketBytes, 0, plaintext, 0, REGISTRATION_TICKET_RAW_BYTES)
+        System.arraycopy(vaultKey.keyBytes, 0, plaintext, REGISTRATION_TICKET_RAW_BYTES, VAULT_KEY_SIZE)
+
+        val txKeyPair = generateKeyPair(random)
+        var sharedSecret: ByteArray? = null
+        var symmetricKey: ByteArray? = null
+        try {
+            sharedSecret = computeSharedSecret(txKeyPair.privateKey, peerPublicKey)
+            symmetricKey = derivePairingKey(sharedSecret)
+
+            val iv = ByteArray(NONCE_SIZE)
+            random.nextBytes(iv)
+
+            val cipher = Cipher.getInstance(AES_GCM_ALGORITHM)
+            val keySpec = SecretKeySpec(symmetricKey, "AES")
+            val gcmSpec = GCMParameterSpec(128, iv)
+            cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec)
+
+            val ciphertextAndTag = cipher.doFinal(plaintext)
+            require(ciphertextAndTag.size == COMPOUND_CIPHERTEXT_WITH_TAG_SIZE) {
+                "Encrypted ciphertext length mismatch: expected $COMPOUND_CIPHERTEXT_WITH_TAG_SIZE, got ${ciphertextAndTag.size}"
+            }
+
+            val payload = ByteArray(COMPOUND_ENVELOPE_RAW_BYTES)
+            System.arraycopy(txKeyPair.publicKey, 0, payload, 0, PUBLIC_KEY_SIZE)
+            System.arraycopy(iv, 0, payload, PUBLIC_KEY_SIZE, NONCE_SIZE)
+            System.arraycopy(ciphertextAndTag, 0, payload, PUBLIC_KEY_SIZE + NONCE_SIZE, COMPOUND_CIPHERTEXT_WITH_TAG_SIZE)
+
+            return bytesToHex(payload)
+        } finally {
+            sharedSecret?.let { Arrays.fill(it, 0.toByte()) }
+            symmetricKey?.let { Arrays.fill(it, 0.toByte()) }
+            Arrays.fill(ticketBytes, 0.toByte())
+            Arrays.fill(plaintext, 0.toByte())
+            txKeyPair.close()
+        }
+    }
+
+    /**
+     * Decrypts [payloadHex] and unmarshals the transferred [PairingBundle].
+     *
+     * Gracefully supports both 248-character compound envelopes and 184-character legacy envelopes.
+     *
+     * @param payloadHex Hexadecimal wire envelope (248 or 184 hex characters).
+     * @param receiverPrivateKey The receiver's 32-byte private key.
+     * @return [PairingBundle] holding the registration ticket (if present) and decrypted [MasterVaultKey].
+     */
+    fun decryptCompoundPayload(payloadHex: String, receiverPrivateKey: ByteArray): PairingBundle {
+        require(receiverPrivateKey.size == PRIVATE_KEY_SIZE) {
+            "Receiver private key must be $PRIVATE_KEY_SIZE bytes"
+        }
+
+        val cleanPayload = payloadHex.trim()
+        if (cleanPayload.length == ENVELOPE_HEX_LENGTH) {
+            val vaultKey = decryptPayload(cleanPayload, receiverPrivateKey)
+            return PairingBundle(registrationTicket = "", vaultKey = vaultKey)
+        }
+
+        require(cleanPayload.length == COMPOUND_ENVELOPE_HEX_LENGTH) {
+            "Payload length must be $COMPOUND_ENVELOPE_HEX_LENGTH or $ENVELOPE_HEX_LENGTH hex chars, got ${cleanPayload.length}"
+        }
+
+        val rawPayload = hexToBytes(cleanPayload)
+        val txPublicKey = rawPayload.copyOfRange(0, PUBLIC_KEY_SIZE)
+        val iv = rawPayload.copyOfRange(PUBLIC_KEY_SIZE, PUBLIC_KEY_SIZE + NONCE_SIZE)
+        val ciphertextAndTag = rawPayload.copyOfRange(PUBLIC_KEY_SIZE + NONCE_SIZE, COMPOUND_ENVELOPE_RAW_BYTES)
+
+        var sharedSecret: ByteArray? = null
+        var symmetricKey: ByteArray? = null
+        var decryptedBytes: ByteArray? = null
+        try {
+            sharedSecret = computeSharedSecret(receiverPrivateKey, txPublicKey)
+            symmetricKey = derivePairingKey(sharedSecret)
+
+            val cipher = Cipher.getInstance(AES_GCM_ALGORITHM)
+            val keySpec = SecretKeySpec(symmetricKey, "AES")
+            val gcmSpec = GCMParameterSpec(128, iv)
+            cipher.init(Cipher.DECRYPT_MODE, keySpec, gcmSpec)
+
+            decryptedBytes = cipher.doFinal(ciphertextAndTag)
+            require(decryptedBytes.size == COMPOUND_PLAINTEXT_SIZE) {
+                "Decrypted payload size mismatch: expected $COMPOUND_PLAINTEXT_SIZE bytes, got ${decryptedBytes.size}"
+            }
+
+            val ticketBytes = decryptedBytes.copyOfRange(0, REGISTRATION_TICKET_RAW_BYTES)
+            val vaultKeyBytes = decryptedBytes.copyOfRange(REGISTRATION_TICKET_RAW_BYTES, COMPOUND_PLAINTEXT_SIZE)
+            val ticketHex = bytesToHex(ticketBytes)
+
+            Arrays.fill(ticketBytes, 0.toByte())
+
+            return PairingBundle(registrationTicket = ticketHex, vaultKey = MasterVaultKey(vaultKeyBytes))
+        } finally {
+            sharedSecret?.let { Arrays.fill(it, 0.toByte()) }
+            symmetricKey?.let { Arrays.fill(it, 0.toByte()) }
+            decryptedBytes?.let { Arrays.fill(it, 0.toByte()) }
+            Arrays.fill(rawPayload, 0.toByte())
         }
     }
 

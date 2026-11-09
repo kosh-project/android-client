@@ -341,4 +341,32 @@ class AuthRepository @Inject constructor(
     fun isLoggedIn(): Boolean {
         return sessionManager.getToken() != null && sessionManager.getVaultKey() != null
     }
+
+    /**
+     * Checks if this device has any stored session credentials or keys in hardware-backed storage.
+     */
+    fun hasStoredCredentials(): Boolean {
+        return sessionManager.getToken() != null || sessionManager.getVaultKey() != null || sessionManager.getUsername() != null
+    }
+
+    /**
+     * Checks if the Master Vault Key is currently present and unlocked in hardware storage.
+     */
+    fun hasVaultKey(): Boolean {
+        return sessionManager.getVaultKey() != null
+    }
+
+    /**
+     * Checks if an ephemeral registration ticket is saved in hardware-backed storage from device pairing.
+     */
+    fun hasPendingRegistrationTicket(): Boolean {
+        return !sessionManager.getRegistrationTicket().isNullOrBlank()
+    }
+
+    /**
+     * Directly persists an authenticated session token in hardware storage.
+     */
+    fun saveSessionToken(token: String) {
+        sessionManager.saveToken(token)
+    }
 }

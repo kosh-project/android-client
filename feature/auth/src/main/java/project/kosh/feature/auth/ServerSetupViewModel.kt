@@ -152,6 +152,77 @@ class ServerSetupViewModel @Inject constructor(
     }
 
     /**
+     * Connects to a local server over ADB port-forwarding (127.0.0.1:23342).
+     * Automatically attempts TLS first, falling back to plaintext HTTP.
+     *
+     * @param port Target TCP port (defaults to 23342).
+     */
+    fun connectAdb(port: Int = ServerConfig.PORT_DEV) {
+        val host = ServerConfig.HOST_LOCALHOST
+        _uiState.value = ServerSetupUiState(
+            stage = ServerSetupStage.Probing(host, port, isTls = false),
+            probeError = null
+        )
+
+        viewModelScope.launch {
+            certificateProber.autoProbe(host, port)
+                .onSuccess { probeResult ->
+                    _uiState.value = ServerSetupUiState(
+                        stage = ServerSetupStage.Verification(probeResult),
+                        probeError = null
+                    )
+                }
+                .onFailure { error ->
+                    val errorMsg = when (error) {
+                        is java.net.ConnectException ->
+                            "Connection refused at $host:$port. Ensure 'adb reverse tcp:$port tcp:$port' is executed on your host machine."
+                        is java.net.SocketTimeoutException ->
+                            "Connection timed out at $host:$port via ADB. Check USB cable and reverse port forward."
+                        else -> error.message ?: "Failed to connect to local server via ADB."
+                    }
+                    _uiState.value = ServerSetupUiState(
+                        stage = ServerSetupStage.Locating,
+                        probeError = errorMsg
+                    )
+                }
+        }
+    }
+
+    /**
+     * Connects to a host machine server from inside an Android Emulator (10.0.2.2:23342).
+     *
+     * @param port Target TCP port (defaults to 23342).
+     */
+    fun connectEmulator(port: Int = ServerConfig.PORT_DEV) {
+        val host = ServerConfig.HOST_EMULATOR
+        _uiState.value = ServerSetupUiState(
+            stage = ServerSetupStage.Probing(host, port, isTls = false),
+            probeError = null
+        )
+
+        viewModelScope.launch {
+            certificateProber.autoProbe(host, port)
+                .onSuccess { probeResult ->
+                    _uiState.value = ServerSetupUiState(
+                        stage = ServerSetupStage.Verification(probeResult),
+                        probeError = null
+                    )
+                }
+                .onFailure { error ->
+                    val errorMsg = when (error) {
+                        is java.net.ConnectException ->
+                            "Connection refused at $host:$port. Verify host server is running and listening on 0.0.0.0 or 127.0.0.1."
+                        else -> error.message ?: "Failed to connect to emulator host."
+                    }
+                    _uiState.value = ServerSetupUiState(
+                        stage = ServerSetupStage.Locating,
+                        probeError = errorMsg
+                    )
+                }
+        }
+    }
+
+    /**
      * Verifies scanned QR code payload against the active probed certificate fingerprint.
      *
      * Evaluates binary raw bytes, 64-character hex strings, Base64 strings, ISO-8859-1 binary
@@ -234,7 +305,7 @@ class ServerSetupViewModel @Inject constructor(
             }
 
             // 2c. 12 BIP-39 SAS words match
-            val words = trimmed.lowercase().split("\\s+".toRegex()).filter { it.isNotEmpty() }
+            val words = Bip39Sas.extractWords(trimmed)
             if (words.size == 12) {
                 var wordsMatch = true
                 for (w in 0 until 12) {
