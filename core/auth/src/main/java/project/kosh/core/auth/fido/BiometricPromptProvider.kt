@@ -4,7 +4,9 @@ import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
@@ -47,63 +49,69 @@ class DefaultBiometricPromptProvider @Inject constructor() : BiometricPromptProv
         title: String,
         subtitle: String,
         cryptoObject: BiometricPrompt.CryptoObject?
-    ): BiometricPrompt.AuthenticationResult = suspendCancellableCoroutine { continuation ->
-        val executor = ContextCompat.getMainExecutor(activity)
-        val promptBuilder = BiometricPrompt.PromptInfo.Builder()
-            .setTitle(title)
-            .setSubtitle(subtitle)
-            .setNegativeButtonText("Cancel")
+    ): BiometricPrompt.AuthenticationResult = withContext(Dispatchers.Main) {
+        suspendCancellableCoroutine { continuation ->
+            val executor = ContextCompat.getMainExecutor(activity)
+            val promptBuilder = BiometricPrompt.PromptInfo.Builder()
+                .setTitle(title)
+                .setSubtitle(subtitle)
+                .setNegativeButtonText("Cancel")
 
-        if (cryptoObject != null) {
-            promptBuilder.setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-        } else {
-            promptBuilder.setAllowedAuthenticators(
-                BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                        BiometricManager.Authenticators.BIOMETRIC_WEAK
-            )
-        }
-
-        val promptInfo = promptBuilder.build()
-
-        val callback = object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                if (continuation.isActive) {
-                    continuation.resume(result)
-                }
+            if (cryptoObject != null) {
+                promptBuilder.setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            } else {
+                promptBuilder.setAllowedAuthenticators(
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                            BiometricManager.Authenticators.BIOMETRIC_WEAK
+                )
             }
 
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                if (continuation.isActive) {
-                    if (errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
-                        errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
-                        errorCode == BiometricPrompt.ERROR_CANCELED
-                    ) {
-                        continuation.resumeWithException(
-                            BiometricCancelledException(errString.toString())
-                        )
-                    } else {
-                        continuation.resumeWithException(
-                            FidoAuthenticationException("Biometric prompt error ($errorCode): $errString")
-                        )
+            val promptInfo = promptBuilder.build()
+
+            val callback = object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    if (continuation.isActive) {
+                        continuation.resume(result)
                     }
                 }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    if (continuation.isActive) {
+                        if (errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
+                            errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
+                            errorCode == BiometricPrompt.ERROR_CANCELED
+                        ) {
+                            continuation.resumeWithException(
+                                BiometricCancelledException(errString.toString())
+                            )
+                        } else {
+                            continuation.resumeWithException(
+                                FidoAuthenticationException("Biometric prompt error ($errorCode): $errString")
+                            )
+                        }
+                    }
+                }
+
+                override fun onAuthenticationFailed() {
+                    // Biometric attempt rejected (e.g. unrecognized fingerprint).
+                    // The prompt dialog remains visible on screen allowing subsequent attempts.
+                }
             }
 
-            override fun onAuthenticationFailed() {
-                // Biometric attempt rejected (e.g. unrecognized fingerprint).
-                // The prompt dialog remains visible on screen allowing subsequent attempts.
+            val prompt = BiometricPrompt(activity, executor, callback)
+            if (cryptoObject != null) {
+                prompt.authenticate(promptInfo, cryptoObject)
+            } else {
+                prompt.authenticate(promptInfo)
             }
-        }
 
-        val prompt = BiometricPrompt(activity, executor, callback)
-        if (cryptoObject != null) {
-            prompt.authenticate(promptInfo, cryptoObject)
-        } else {
-            prompt.authenticate(promptInfo)
-        }
-
-        continuation.invokeOnCancellation {
-            prompt.cancelAuthentication()
+            continuation.invokeOnCancellation {
+                activity.runOnUiThread {
+                    try {
+                        prompt.cancelAuthentication()
+                    } catch (_: Exception) {}
+                }
+            }
         }
     }
 }

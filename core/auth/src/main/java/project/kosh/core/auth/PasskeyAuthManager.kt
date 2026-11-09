@@ -108,6 +108,13 @@ class PasskeyAuthManager @Inject constructor(
     }
 
     /**
+     * Clears all locally held passkey credentials and enclave keys.
+     */
+    fun clearPasskeys() {
+        internalAuthenticator.clearAllCredentials()
+    }
+
+    /**
      * Enrolls a new biometric passkey for the currently authenticated account.
      *
      * 1. Confirms presence of an active session token in [SessionManager].
@@ -342,21 +349,23 @@ class PasskeyAuthManager @Inject constructor(
      * @return Decrypted [MasterVaultKey], or null if verification failed.
      */
     fun unlockVaultWithPassphrase(wrappedVaultKeyHex: String, passphrase: String): MasterVaultKey? {
-        if (passphrase.isBlank() || wrappedVaultKeyHex.isBlank()) return null
+        val cleanKeyHex = wrappedVaultKeyHex.trim()
+        if (passphrase.isBlank() || cleanKeyHex.isBlank()) return null
         val normalized = identityManager.normalizeRecoveryPhrase(passphrase)
-        if (normalized.isNotBlank()) {
+        if (!normalized.isNullOrBlank()) {
             try {
                 val kek = identityManager.deriveKek(normalized)
-                val masterKey = AesGcmEnvelope.unwrap(wrappedVaultKeyHex, kek)
+                val masterKey = AesGcmEnvelope.unwrap(cleanKeyHex, kek)
                 sessionManager.saveVaultKey(masterKey)
                 return masterKey
             } catch (_: Exception) {
                 // Fall through to unnormalized passphrase if distinct
             }
         }
+        val cleanPassphrase = passphrase.trim()
         return try {
-            val kek = identityManager.deriveKek(passphrase)
-            val masterKey = AesGcmEnvelope.unwrap(wrappedVaultKeyHex, kek)
+            val kek = identityManager.deriveKek(cleanPassphrase)
+            val masterKey = AesGcmEnvelope.unwrap(cleanKeyHex, kek)
             sessionManager.saveVaultKey(masterKey)
             masterKey
         } catch (_: Exception) {

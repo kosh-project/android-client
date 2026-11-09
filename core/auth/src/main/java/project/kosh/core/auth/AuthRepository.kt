@@ -357,6 +357,13 @@ class AuthRepository @Inject constructor(
     }
 
     /**
+     * Resolves the unlocked Master Vault Key from hardware storage, or null if locked.
+     */
+    fun getVaultKey(): MasterVaultKey? {
+        return sessionManager.getVaultKey()
+    }
+
+    /**
      * Checks if an ephemeral registration ticket is saved in hardware-backed storage from device pairing.
      */
     fun hasPendingRegistrationTicket(): Boolean {
