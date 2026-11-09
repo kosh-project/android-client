@@ -267,6 +267,65 @@ class DevicePairingManager @Inject constructor(
         return mailboxClient.fulfillMailbox(mailboxId, payloadHex, token)
     }
 
+    /**
+     * Fulfills sender session for an 8-character mailbox identifier by querying the mailbox status
+     * from the server to retrieve the receiver's ephemeral public key. Retries if the peer is still
+     * completing proof-of-work or network registration.
+     *
+     * @param mailboxId 8-character Crockford Base32 mailbox code.
+     * @param token Optional explicit session token.
+     * @param vaultKeyOverride Optional vault key override.
+     * @param maxRetries Maximum polling attempts while awaiting peer readiness (default 10).
+     * @param retryDelayMillis Delay between successive polling attempts (default 1000ms).
+     * @return [NetworkResult.Success] on completion or [NetworkResult.Failure].
+     */
+    suspend fun fulfillSenderWithCode(
+        mailboxId: String,
+        token: String? = null,
+        vaultKeyOverride: MasterVaultKey? = null,
+        maxRetries: Int = 10,
+        retryDelayMillis: Long = 1_000L
+    ): NetworkResult<Unit> {
+        val cleanId = mailboxId.trim().replace("-", "").replace(" ", "").lowercase()
+        if (cleanId.length != 8) {
+            return NetworkResult.Unknown("Pairing code must be 8 characters, got '$cleanId'")
+        }
+
+        var lastFailure: NetworkResult.Failure? = null
+        for (attempt in 0 until maxRetries) {
+            val statusResult = mailboxClient.checkStatus(cleanId, token)
+            when (statusResult) {
+                is NetworkResult.Success -> {
+                    val pubTemp = statusResult.data.pubTemp
+                    if (!pubTemp.isNullOrBlank()) {
+                        return fulfillSenderSession(
+                            mailboxId = cleanId,
+                            receiverPublicKeyHex = pubTemp,
+                            token = token,
+                            vaultKeyOverride = vaultKeyOverride
+                        )
+                    }
+                    lastFailure = NetworkResult.Unknown("Peer device is not ready yet (status: ${statusResult.data.status})")
+                }
+                is NetworkResult.Http -> {
+                    if (statusResult.code == 404) {
+                        lastFailure = statusResult
+                    } else {
+                        return statusResult
+                    }
+                }
+                is NetworkResult.Failure -> {
+                    lastFailure = statusResult
+                }
+            }
+            if (attempt < maxRetries - 1) {
+                delay(retryDelayMillis)
+            }
+        }
+
+        return lastFailure ?: NetworkResult.Unknown("Timed out waiting for peer device to become ready")
+    }
+
     // ==========================================
     // Flow B: Sender Displays QR Code
     // ==========================================
