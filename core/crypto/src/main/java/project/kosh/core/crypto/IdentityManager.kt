@@ -112,4 +112,41 @@ class IdentityManager @Inject constructor() {
 
         return result.rawHashAsByteArray()
     }
+
+    /**
+     * Normalizes a recovery phrase by stripping numbering, punctuation, trimming whitespace,
+     * and collapsing into canonical single-space-separated BIP-39 words.
+     */
+    fun normalizeRecoveryPhrase(phrase: String): String =
+        Bip39Sas.normalizePhrase(phrase)
+
+    /**
+     * Derives an [AuthCredential] pair from a user's [recoveryPhrase].
+     *
+     * In the passkey-first Zero-Knowledge model, the 24-word recovery phrase serves as the user's
+     * master recovery seed. Its SHA-256 digest acts as the 32-byte identity hash for Proof-of-Work
+     * and database lookup, while its Argon2id hash serves as the authentication verifier.
+     *
+     * @param recoveryPhrase 24-word BIP-39 recovery phrase or master passphrase string.
+     * @return The derived [AuthCredential] containing identity hash and Argon2id verifier.
+     */
+    fun deriveCredentialsFromRecoveryPhrase(recoveryPhrase: String): AuthCredential {
+        val normalized = normalizeRecoveryPhrase(recoveryPhrase)
+        val phraseBytes = normalized.toByteArray(Charsets.UTF_8)
+        return AuthCredential(
+            computeIdentityHash(phraseBytes),
+            computeAuthVerifier(phraseBytes)
+        )
+    }
+
+    /**
+     * Derives the 32-byte Key Encryption Key (KEK) from a user's [recoveryPhrase].
+     *
+     * @param recoveryPhrase 24-word BIP-39 recovery phrase or master passphrase string.
+     * @return 32-byte AES-GCM Key Encryption Key.
+     */
+    fun deriveKekFromRecoveryPhrase(recoveryPhrase: String): ByteArray {
+        val normalized = normalizeRecoveryPhrase(recoveryPhrase)
+        return deriveKek(normalized)
+    }
 }

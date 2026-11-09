@@ -8,6 +8,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import androidx.core.content.edit
 import dagger.hilt.android.qualifiers.ApplicationContext
+import project.kosh.core.crypto.MasterVaultKey
 import project.kosh.core.network.TokenProvider
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -124,16 +125,135 @@ class SessionManager @Inject constructor(
     }
 
     /**
-     * Clears all stored session credentials from local storage.
+     * Encrypts and securely persists the 32-byte Master Vault Key using the hardware-backed KeyStore key.
+     *
+     * @param vaultKey The active 32-byte Master Vault Key.
+     */
+    fun saveVaultKey(vaultKey: MasterVaultKey) {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
+
+        val iv = cipher.iv
+        val ciphertext = cipher.doFinal(vaultKey.keyBytes)
+
+        prefs.edit {
+            putString("vault_key_iv", Base64.encodeToString(iv, Base64.DEFAULT))
+            putString("vault_key_enc", Base64.encodeToString(ciphertext, Base64.DEFAULT))
+        }
+    }
+
+    /**
+     * Decrypts and retrieves the active 32-byte Master Vault Key from hardware-backed storage.
+     *
+     * @return The decrypted [MasterVaultKey], or `null` if not found or verification fails.
+     */
+    fun getVaultKey(): MasterVaultKey? {
+        val ivBase64 = prefs.getString("vault_key_iv", null) ?: return null
+        val ciphertextBase64 = prefs.getString("vault_key_enc", null) ?: return null
+
+        val iv = Base64.decode(ivBase64, Base64.DEFAULT)
+        val ciphertext = Base64.decode(ciphertextBase64, Base64.DEFAULT)
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val spec = GCMParameterSpec(128, iv)
+
+        cipher.init(Cipher.DECRYPT_MODE, getSecretKey(), spec)
+
+        return try {
+            val keyBytes = cipher.doFinal(ciphertext)
+            MasterVaultKey(keyBytes)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Persists the active user handle or username in secure storage.
+     *
+     * @param username Account identifier.
+     */
+    fun saveUsername(username: String) {
+        prefs.edit {
+            putString("active_user", username)
+        }
+    }
+
+    /**
+     * Resolves the persisted username, or null if unauthenticated.
+     */
+    fun getUsername(): String? {
+        return prefs.getString("active_user", null)
+    }
+
+    /**
+     * Encrypts and securely persists the ephemeral registration ticket in hardware-backed storage.
+     *
+     * @param ticket The 64-hex Crockford registration ticket minted during pairing.
+     */
+    fun saveRegistrationTicket(ticket: String) {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
+
+        val iv = cipher.iv
+        val ciphertext = cipher.doFinal(ticket.toByteArray(Charsets.UTF_8))
+
+        prefs.edit {
+            putString("registration_ticket_iv", Base64.encodeToString(iv, Base64.DEFAULT))
+            putString("registration_ticket_enc", Base64.encodeToString(ciphertext, Base64.DEFAULT))
+        }
+    }
+
+    /**
+     * Decrypts and retrieves the ephemeral registration ticket from secure storage.
+     *
+     * @return The decrypted registration ticket, or null if absent or decryption fails.
+     */
+    fun getRegistrationTicket(): String? {
+        val ivBase64 = prefs.getString("registration_ticket_iv", null) ?: return null
+        val ciphertextBase64 = prefs.getString("registration_ticket_enc", null) ?: return null
+
+        val iv = Base64.decode(ivBase64, Base64.DEFAULT)
+        val ciphertext = Base64.decode(ciphertextBase64, Base64.DEFAULT)
+
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        val spec = GCMParameterSpec(128, iv)
+
+        cipher.init(Cipher.DECRYPT_MODE, getSecretKey(), spec)
+
+        return try {
+            val decodedBytes = cipher.doFinal(ciphertext)
+            String(decodedBytes, Charsets.UTF_8)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Clears any stored ephemeral registration ticket.
+     */
+    fun clearRegistrationTicket() {
+        prefs.edit {
+            remove("registration_ticket_iv")
+            remove("registration_ticket_enc")
+        }
+    }
+
+    /**
+     * Clears all stored session credentials, vault keys, and registration tickets from local storage.
      *
      * Invoked during user logout or when the server responds with HTTP 401 Unauthorized
      * (e.g. token expiration or server reboot with rotated signing secret) to prevent
      * infinite 401 retry loops.
      */
     fun clearToken() {
-        prefs.edit() {
+        prefs.edit {
             remove("auth_iv")
             remove("auth_token_enc")
+            remove("vault_key_iv")
+            remove("vault_key_enc")
+            remove("active_user")
+            remove("registration_ticket_iv")
+            remove("registration_ticket_enc")
         }
     }
 }

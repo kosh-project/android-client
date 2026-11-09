@@ -11,8 +11,17 @@ class MasterVaultKey(val keyBytes: ByteArray) : AutoCloseable {
         }
     }
 
+    var isClosed: Boolean = false
+        private set
+
+    /**
+     * Wipes the sensitive 32-byte key buffer with zeroes in memory.
+     */
     override fun close() {
-        Arrays.fill(keyBytes, 0.toByte())
+        if (!isClosed) {
+            Arrays.fill(keyBytes, 0.toByte())
+            isClosed = true
+        }
     }
 
     companion object {

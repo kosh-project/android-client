@@ -34,10 +34,12 @@ import javax.inject.Singleton
  */
 @Singleton
 class AssetClient @Inject constructor(
-    @AuthOkHttpClient private val client: OkHttpClient
+    @AuthOkHttpClient private val client: OkHttpClient,
+    private val serverConfigStore: ServerConfigurationStore
 ) {
     private val json = Json { ignoreUnknownKeys = true }
-    private val baseUrl = "http://192.168.240.1:6969/api/v1"
+
+    private fun getBaseUrl(): String = "${serverConfigStore.getBaseUrl()}/api/v1"
 
     /**
      * Uploads a binary asset from an Android content [Uri] to the server CAS vault.
@@ -59,6 +61,7 @@ class AssetClient @Inject constructor(
         tag: AssetTag,
         originalFileName: String
     ): NetworkResult<String> = withContext(Dispatchers.IO) {
+        val baseUrl = getBaseUrl()
         val requestBody = StreamingUriRequestBody(contentResolver, uri)
 
         val request = Request.Builder()
@@ -104,6 +107,7 @@ class AssetClient @Inject constructor(
         hash: String,
         destinationFile: File
     ): NetworkResult<File> = withContext(Dispatchers.IO){
+        val baseUrl = getBaseUrl()
         val request = Request.Builder()
             .url("$baseUrl/assets/$hash")
             .get()
@@ -132,6 +136,7 @@ class AssetClient @Inject constructor(
         limit: Int = 50,
         cursor: AssetCursor? = null
     ): NetworkResult<AssetPage> = withContext(Dispatchers.IO) {
+        val baseUrl = getBaseUrl()
         val urlBuilder = "$baseUrl/assets".toHttpUrl()
             .newBuilder()
             .addQueryParameter("tag", tag.id.toString())
@@ -166,6 +171,7 @@ class AssetClient @Inject constructor(
     suspend fun deleteAsset(
         hash: String
     ) : NetworkResult<Unit> = withContext(Dispatchers.IO) {
+        val baseUrl = getBaseUrl()
         val request = Request.Builder()
             .url("$baseUrl/assets/$hash")
             .delete()

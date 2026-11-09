@@ -19,10 +19,12 @@ android {
 dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:model"))
+    implementation(project(":core:auth"))
 
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material.icons.core)
 
     implementation(libs.androidx.hilt.navigation.compose)
     implementation(libs.lifecycle.viewmodel.compose)
@@ -30,4 +32,8 @@ dependencies {
     implementation(libs.dagger.hilt.android)
     ksp(libs.dagger.hilt.compiler)
     ksp(libs.kotlin.metadata.jvm)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.io.mockk)
+    testImplementation(libs.org.jetbrains.kotlinx.coroutines.test)
 }
