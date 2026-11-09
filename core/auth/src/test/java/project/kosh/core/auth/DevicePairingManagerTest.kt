@@ -383,4 +383,71 @@ class DevicePairingManagerTest {
         val error = states.last() as PairingState.Error
         assertTrue(error.message.contains("Failed to decrypt transferred pairing bundle"))
     }
+
+    @Test
+    fun `fulfillSenderWithCode fulfills successfully when peer is ready`() = runBlocking {
+        val masterKey = MasterVaultKey.generate()
+        every { sessionManager.getToken() } returns "active-token"
+        every { sessionManager.getVaultKey() } returns masterKey
+
+        val receiverKeyPair = EcdhPairingCrypto.generateKeyPair()
+        val rxPubHex = EcdhPairingCrypto.bytesToHex(receiverKeyPair.publicKey)
+
+        coEvery { mailboxClient.checkStatus("c7m9x4b2", "active-token") } returns NetworkResult.Success(
+            MailboxStatusResponse(status = "ready", pubTemp = rxPubHex)
+        )
+        coEvery { mailboxClient.mintLinkTicket("active-token") } returns NetworkResult.Success(
+            LinkTicketResponse(ticket = testTicket, registrationTicket = testTicket, expiresIn = 300L)
+        )
+        coEvery { mailboxClient.fulfillMailbox("c7m9x4b2", any(), "active-token") } returns NetworkResult.Success(Unit)
+
+        val result = devicePairingManager.fulfillSenderWithCode("c7m9-x4b2", "active-token")
+        assertTrue(result is NetworkResult.Success)
+
+        receiverKeyPair.close()
+        masterKey.close()
+    }
+
+    @Test
+    fun `fulfillSenderWithCode retries when peer initially waiting and succeeds when ready`() = runBlocking {
+        val masterKey = MasterVaultKey.generate()
+        every { sessionManager.getToken() } returns "active-token"
+        every { sessionManager.getVaultKey() } returns masterKey
+
+        val receiverKeyPair = EcdhPairingCrypto.generateKeyPair()
+        val rxPubHex = EcdhPairingCrypto.bytesToHex(receiverKeyPair.publicKey)
+
+        var attempts = 0
+        coEvery { mailboxClient.checkStatus("c7m9x4b2", "active-token") } answers {
+            attempts++
+            if (attempts == 1) {
+                NetworkResult.Success(MailboxStatusResponse(status = "waiting", pubTemp = null))
+            } else {
+                NetworkResult.Success(MailboxStatusResponse(status = "ready", pubTemp = rxPubHex))
+            }
+        }
+        coEvery { mailboxClient.mintLinkTicket("active-token") } returns NetworkResult.Success(
+            LinkTicketResponse(ticket = testTicket, registrationTicket = testTicket, expiresIn = 300L)
+        )
+        coEvery { mailboxClient.fulfillMailbox("c7m9x4b2", any(), "active-token") } returns NetworkResult.Success(Unit)
+
+        val result = devicePairingManager.fulfillSenderWithCode(
+            mailboxId = "c7m9-x4b2",
+            token = "active-token",
+            maxRetries = 3,
+            retryDelayMillis = 10L
+        )
+        assertTrue(result is NetworkResult.Success)
+        assertEquals(2, attempts)
+
+        receiverKeyPair.close()
+        masterKey.close()
+    }
+
+    @Test
+    fun `fulfillSenderWithCode fails immediately on invalid code length`() = runBlocking {
+        val result = devicePairingManager.fulfillSenderWithCode("short")
+        assertTrue(result is NetworkResult.Failure)
+        assertTrue((result as NetworkResult.Failure).userMessage.contains("must be 8 characters"))
+    }
 }
