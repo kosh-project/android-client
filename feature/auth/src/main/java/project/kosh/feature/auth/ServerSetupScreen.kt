@@ -3,6 +3,7 @@ package project.kosh.feature.auth
 import android.app.Activity
 import android.content.Context
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -28,6 +30,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
@@ -52,8 +55,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -92,7 +93,7 @@ import project.kosh.core.network.ServerConfig
  * Designed according to clean minimal guidelines:
  * - Nearby servers prioritized front-and-center.
  * - Manual parameters and developer ADB tools tucked behind an Advanced Settings accordion.
- * - Contextual TopAppBar (no redundant "KOSH" branding).
+ * - Sleek minimal header row with direct status bar insets (no redundant titlebars).
  * - Monospaced BIP-39 SAS words and SHA-256 fingerprint tucked behind a Manual Verification accordion.
  * - Prominent "Scan Server QR Code" primary action.
  *
@@ -103,7 +104,8 @@ import project.kosh.core.network.ServerConfig
 @Composable
 fun ServerSetupScreen(
     viewModel: ServerSetupViewModel = hiltViewModel(),
-    onServerVerified: () -> Unit
+    onServerVerified: () -> Unit,
+    onBack: (() -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val discoveredServers by viewModel.discoveredServers.collectAsState()
@@ -111,6 +113,14 @@ fun ServerSetupScreen(
 
     val context = LocalContext.current
     var showScannerDialog by rememberSaveable { mutableStateOf(false) }
+
+    BackHandler {
+        if (uiState.stage !is ServerSetupStage.Locating) {
+            viewModel.backToLocating()
+        } else if (onBack != null) {
+            onBack()
+        }
+    }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -132,43 +142,8 @@ fun ServerSetupScreen(
         }
     }
 
-    val topBarTitle = when (uiState.stage) {
-        is ServerSetupStage.Verification -> "Verify Server"
-        else -> "Connect to Server"
-    }
-
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = topBarTitle,
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            text = topBarTitle,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        }
+        modifier = Modifier.fillMaxSize()
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -176,7 +151,39 @@ fun ServerSetupScreen(
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            when (val stage = uiState.stage) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                val showBackButton = uiState.stage !is ServerSetupStage.Locating || onBack != null
+                if (showBackButton) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = {
+                                if (uiState.stage !is ServerSetupStage.Locating) {
+                                    viewModel.backToLocating()
+                                } else {
+                                    onBack?.invoke()
+                                }
+                            },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else {
+                    Spacer(Modifier.statusBarsPadding().height(8.dp))
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    when (val stage = uiState.stage) {
                 is ServerSetupStage.Locating -> {
                     LocateServerContent(
                         discoveredServers = discoveredServers,
@@ -219,6 +226,8 @@ fun ServerSetupScreen(
                     )
                 }
             }
+        }
+    }
 
             // Fingerprint Mismatch Warning Dialog
             if (uiState.showMismatchDialog) {

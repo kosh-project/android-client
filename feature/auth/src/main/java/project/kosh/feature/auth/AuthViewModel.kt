@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +29,7 @@ import project.kosh.core.network.ServerConfigurationStore
 import project.kosh.core.network.ServerHealthPinger
 import project.kosh.core.auth.DevicePairingManager
 import project.kosh.core.auth.PairingState
+import project.kosh.core.model.ActivePairingSession
 import project.kosh.core.model.PairingQrPayload
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -76,6 +78,8 @@ class AuthViewModel @Inject constructor(
      * Defaults to [Dispatchers.Default]; exposed as internal for test overrides.
      */
     internal var defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
+
+    private var pairingJob: Job? = null
 
     private val _state = MutableStateFlow<AuthUiState>(AuthUiState.Idle)
 
@@ -130,6 +134,15 @@ class AuthViewModel @Inject constructor(
      * Observable stream representing out-of-band ECDH device pairing lifecycle.
      */
     val pairingState: StateFlow<PairingState?> = _pairingState.asStateFlow()
+
+    private val _activePairingSession = MutableStateFlow<ActivePairingSession?>(null)
+
+    /**
+     * Observable active pairing session containing mailbox ID, QR payload, and expiration.
+     * Retained across state transitions (e.g. while awaiting fulfillment or expired)
+     * so that the UI can continue to render and animate the QR code and pairing code.
+     */
+    val activePairingSession: StateFlow<ActivePairingSession?> = _activePairingSession.asStateFlow()
 
     private val _lastRegistrationTicket = MutableStateFlow<String?>(null)
 
@@ -197,6 +210,8 @@ class AuthViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            passkeyAuthManager.clearPasskeys()
+            refreshStoredCredentials()
             _state.value = AuthUiState.Loading("Generating vault keys & creating account...")
 
             try {
@@ -281,6 +296,8 @@ class AuthViewModel @Inject constructor(
      */
     fun registerWithPasskey(activityContext: Context, deviceNickname: String? = null) {
         viewModelScope.launch {
+            passkeyAuthManager.clearPasskeys()
+            refreshStoredCredentials()
             _state.value = AuthUiState.Loading("Generating Zero-Knowledge vault & recovery phrase...")
             try {
                 val recoveryWords = Bip39Sas.generateRecoveryPhrase()
@@ -333,6 +350,8 @@ class AuthViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            passkeyAuthManager.clearPasskeys()
+            refreshStoredCredentials()
             _state.value = AuthUiState.Loading("Verifying recovery phrase & unlocking vault...")
             try {
                 when (val result = authRepository.loginWithRecoveryPhrase(cleanPhrase)) {
@@ -405,6 +424,13 @@ class AuthViewModel @Inject constructor(
      * Cancels a pending vault key unlock ceremony and clears any incomplete session token.
      */
     fun cancelVaultUnlock() {
+        pairingJob?.cancel()
+        pairingJob = null
+        val currentPairing = _pairingState.value
+        if (currentPairing is PairingState.Success) {
+            currentPairing.vaultKey.close()
+        }
+        _pairingState.value = null
         if (_state.value is AuthUiState.VaultUnlockRequired) {
             authRepository.logout()
         }
@@ -478,49 +504,62 @@ class AuthViewModel @Inject constructor(
     }
 
     /**
-     * Initiates out-of-band device pairing.
-     * If this device possesses an active Master Vault Key, it acts as a host (Flow B), allocates an ephemeral
-     * mailbox, and emits [PairingState.AwaitingJoin] with the QR payload.
-     * Otherwise, it acts as a receiver (Flow A), solves the PoW puzzle, opens a mailbox, and emits [PairingState.Ready]
-     * awaiting fulfillment by an authorized device.
+     * Initiates out-of-band device pairing on the authentication screen (Flow A).
+     *
+     * As an unauthenticated client, this device acts as a receiver: it solves the Hashcash PoW puzzle,
+     * opens an ephemeral mailbox on the server, generates an X25519 keypair, and displays its pairing
+     * QR code awaiting fulfillment from an authorized device holding the Master Vault Key.
      */
     fun startDevicePairing() {
-        viewModelScope.launch {
+        pairingJob?.cancel()
+        pairingJob = viewModelScope.launch {
             _pairingState.value = null
-            _state.value = AuthUiState.Idle
+            _activePairingSession.value = null
+            if (_state.value !is AuthUiState.VaultUnlockRequired) {
+                _state.value = AuthUiState.Idle
+            }
             try {
-                if (authRepository.hasVaultKey()) {
-                    // Flow B: Authenticated host displays QR code
-                    devicePairingManager.startHostFlow().collect { pState ->
-                        _pairingState.value = pState
-                        if (pState is PairingState.Success) {
-                            pState.registrationTicket?.let { ticket ->
-                                _lastRegistrationTicket.value = ticket
-                            }
-                            refreshStoredCredentials()
-                            _state.value = AuthUiState.Success(isNewRegistration = false)
-                        } else if (pState is PairingState.Error) {
-                            _state.value = AuthUiState.Error("Pairing error: ${pState.message}")
-                        }
+                // Flow A: Unauthenticated receiver displays QR code to let this device sign in via an authorized device
+                devicePairingManager.startReceiverFlow().collect { pState ->
+                    if (pState is PairingState.Ready) {
+                        _activePairingSession.value = ActivePairingSession(
+                            mailboxId = pState.mailboxId,
+                            qrPayloadJson = pState.qrPayloadJson,
+                            expiresInSeconds = pState.expiresInSeconds
+                        )
+                    } else if (pState is PairingState.AwaitingJoin) {
+                        _activePairingSession.value = ActivePairingSession(
+                            mailboxId = pState.mailboxId,
+                            qrPayloadJson = pState.qrPayloadJson,
+                            expiresInSeconds = pState.expiresInSeconds
+                        )
                     }
-                } else {
-                    // Flow A: Unauthenticated receiver displays QR code
-                    devicePairingManager.startReceiverFlow().collect { pState ->
-                        _pairingState.value = pState
-                        if (pState is PairingState.Success) {
-                            pState.registrationTicket?.let { ticket ->
-                                _lastRegistrationTicket.value = ticket
-                            }
-                            refreshStoredCredentials()
-                            val isNewDevice = !pState.registrationTicket.isNullOrBlank()
-                            _state.value = AuthUiState.Success(isNewRegistration = isNewDevice)
-                        } else if (pState is PairingState.Error) {
+                    _pairingState.value = pState
+                    if (pState is PairingState.Success) {
+                        pState.registrationTicket?.let { ticket ->
+                            _lastRegistrationTicket.value = ticket
+                        }
+                        refreshStoredCredentials()
+                        val isVaultUnlock = _state.value is AuthUiState.VaultUnlockRequired
+                        val isNewDevice = !isVaultUnlock && !pState.registrationTicket.isNullOrBlank()
+                        _state.value = AuthUiState.Success(isNewRegistration = isNewDevice)
+                    } else if (pState is PairingState.Error) {
+                        val pendingUnlock = _state.value as? AuthUiState.VaultUnlockRequired
+                        if (pendingUnlock != null) {
+                            _state.value = pendingUnlock.copy(errorMessage = "Pairing error: ${pState.message}")
+                        } else {
                             _state.value = AuthUiState.Error("Pairing error: ${pState.message}")
                         }
                     }
                 }
             } catch (e: Exception) {
-                _state.value = AuthUiState.Error("Pairing failed: ${e.message}")
+                _pairingState.value = PairingState.Error("Device pairing failed: ${e.message}", e)
+                val pendingUnlock = _state.value as? AuthUiState.VaultUnlockRequired
+                if (pendingUnlock != null) {
+                    _state.value = pendingUnlock.copy(errorMessage = "Pairing failed: ${e.message}")
+                } else {
+                    _state.value = AuthUiState.Error("Pairing failed: ${e.message}")
+                }
             }
         }
     }
@@ -531,7 +570,10 @@ class AuthViewModel @Inject constructor(
      * If this device lacks the Master Vault Key, it joins the host's session (Flow B).
      */
     fun linkWithScannedQr(qrJson: String) {
-        viewModelScope.launch {
+        pairingJob?.cancel()
+        pairingJob = viewModelScope.launch {
+            val wasVaultUnlock = _state.value is AuthUiState.VaultUnlockRequired
+            val pendingUnlock = _state.value as? AuthUiState.VaultUnlockRequired
             _state.value = AuthUiState.Loading("Processing pairing code...")
             try {
                 val payload = json.decodeFromString<PairingQrPayload>(qrJson)
@@ -552,11 +594,19 @@ class AuthViewModel @Inject constructor(
                 if (authRepository.hasVaultKey()) {
                     // Flow A: Sender fulfills receiver mailbox
                     val rxPubKey = payload.publicKeyHex.orEmpty()
-                    when (val fulfillResult = devicePairingManager.fulfillSenderSession(
-                        mailboxId = payload.mailboxId,
-                        receiverPublicKeyHex = rxPubKey,
-                        token = payload.token
-                    )) {
+                    val fulfillResult = if (rxPubKey.isNotBlank()) {
+                        devicePairingManager.fulfillSenderSession(
+                            mailboxId = payload.mailboxId,
+                            receiverPublicKeyHex = rxPubKey,
+                            token = payload.token
+                        )
+                    } else {
+                        devicePairingManager.fulfillSenderWithCode(
+                            mailboxId = payload.mailboxId,
+                            token = payload.token
+                        )
+                    }
+                    when (fulfillResult) {
                         is NetworkResult.Success -> {
                             _state.value = AuthUiState.Success(isNewRegistration = false)
                         }
@@ -566,7 +616,7 @@ class AuthViewModel @Inject constructor(
                     }
                 } else {
                     // Flow B: Receiver joins host mailbox
-                    _state.value = AuthUiState.Loading("Joining pairing session...")
+                    _pairingState.value = PairingState.AwaitingFulfillment
                     devicePairingManager.startJoinFlow(
                         mailboxId = payload.mailboxId,
                         host = payload.host,
@@ -579,15 +629,82 @@ class AuthViewModel @Inject constructor(
                                 _lastRegistrationTicket.value = ticket
                             }
                             refreshStoredCredentials()
-                            val isNewDevice = !pState.registrationTicket.isNullOrBlank()
+                            val isNewDevice = !wasVaultUnlock && !pState.registrationTicket.isNullOrBlank()
                             _state.value = AuthUiState.Success(isNewRegistration = isNewDevice)
                         } else if (pState is PairingState.Error) {
-                            _state.value = AuthUiState.Error("Pairing error: ${pState.message}")
+                            if (wasVaultUnlock && pendingUnlock != null) {
+                                _state.value = pendingUnlock.copy(errorMessage = "Pairing error: ${pState.message}")
+                            } else {
+                                _state.value = AuthUiState.Error("Pairing error: ${pState.message}")
+                            }
                         }
                     }
                 }
             } catch (e: Exception) {
-                _state.value = AuthUiState.Error("Invalid pairing QR code: ${e.message}")
+                val plainCode = qrJson.trim().replace("-", "").replace(" ", "").lowercase()
+                if (plainCode.length == 8) {
+                    linkWithPairingCode(plainCode)
+                } else {
+                    if (wasVaultUnlock && pendingUnlock != null) {
+                        _state.value = pendingUnlock.copy(errorMessage = "Invalid pairing QR code: ${e.message}")
+                    } else {
+                        _state.value = AuthUiState.Error("Invalid pairing QR code: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Pairs with a peer device using an 8-character Crockford Base32 pairing code.
+     * If this device already possesses the Master Vault Key, it fulfills the peer's receiver session.
+     * If this device lacks the Master Vault Key, it joins the host's session (Flow B).
+     */
+    fun linkWithPairingCode(code: String) {
+        val cleanCode = code.trim().replace("-", "").replace(" ", "").lowercase()
+        if (cleanCode.length != 8) {
+            val pendingUnlock = _state.value as? AuthUiState.VaultUnlockRequired
+            if (pendingUnlock != null) {
+                _state.value = pendingUnlock.copy(errorMessage = "Pairing code must be 8 characters")
+            } else {
+                _state.value = AuthUiState.Error("Pairing code must be 8 characters")
+            }
+            return
+        }
+
+        pairingJob?.cancel()
+        pairingJob = viewModelScope.launch {
+            val wasVaultUnlock = _state.value is AuthUiState.VaultUnlockRequired
+            val pendingUnlock = _state.value as? AuthUiState.VaultUnlockRequired
+            if (authRepository.hasVaultKey()) {
+                _state.value = AuthUiState.Loading("Fulfilling pairing session...")
+                when (val result = devicePairingManager.fulfillSenderWithCode(cleanCode)) {
+                    is NetworkResult.Success -> {
+                        _state.value = AuthUiState.Success(isNewRegistration = false)
+                    }
+                    is NetworkResult.Failure -> {
+                        _state.value = AuthUiState.Error("Failed to fulfill pairing: ${result.userMessage}")
+                    }
+                }
+            } else {
+                _pairingState.value = PairingState.AwaitingFulfillment
+                devicePairingManager.startJoinFlow(mailboxId = cleanCode).collect { pState ->
+                    _pairingState.value = pState
+                    if (pState is PairingState.Success) {
+                        pState.registrationTicket?.let { ticket ->
+                            _lastRegistrationTicket.value = ticket
+                        }
+                        refreshStoredCredentials()
+                        val isNewDevice = !wasVaultUnlock && !pState.registrationTicket.isNullOrBlank()
+                        _state.value = AuthUiState.Success(isNewRegistration = isNewDevice)
+                    } else if (pState is PairingState.Error) {
+                        if (wasVaultUnlock && pendingUnlock != null) {
+                            _state.value = pendingUnlock.copy(errorMessage = "Pairing error: ${pState.message}")
+                        } else {
+                            _state.value = AuthUiState.Error("Pairing error: ${pState.message}")
+                        }
+                    }
+                }
             }
         }
     }
@@ -645,19 +762,32 @@ class AuthViewModel @Inject constructor(
      * Cancels an ongoing device pairing session and wipes any active key in memory.
      */
     fun cancelDevicePairing() {
+        pairingJob?.cancel()
+        pairingJob = null
         val currentPairing = _pairingState.value
         if (currentPairing is PairingState.Success) {
             currentPairing.vaultKey.close()
         }
         _pairingState.value = null
-        _state.value = AuthUiState.Idle
+        _activePairingSession.value = null
+        if (_state.value !is AuthUiState.VaultUnlockRequired) {
+            _state.value = AuthUiState.Idle
+        }
     }
 
     override fun onCleared() {
         super.onCleared()
+        pairingJob?.cancel()
+        pairingJob = null
         val currentPairing = _pairingState.value
         if (currentPairing is PairingState.Success) {
             currentPairing.vaultKey.close()
         }
     }
 }
+
+/**
+ * Snapshot of an active ephemeral pairing session for display and animated blur lifecycle.
+ */
+typealias ActivePairingSession = project.kosh.core.model.ActivePairingSession
+
