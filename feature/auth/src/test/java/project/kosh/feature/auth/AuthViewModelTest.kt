@@ -8,6 +8,7 @@ import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -606,17 +607,38 @@ class AuthViewModelTest {
     }
 
     @Test
-    fun `startDevicePairing initiates host flow when device has vault key`() = runTest {
-        every { mockRepository.hasVaultKey() } returns true
-        coEvery { mockDevicePairingManager.startHostFlow(any(), any()) } returns flowOf(
-            PairingState.AwaitingJoin("c7m9x4b2", "{\"mailbox_id\":\"c7m9x4b2\"}", 300L)
+    fun `startDevicePairing initiates receiver flow on auth screen`() = runTest {
+        coEvery { mockDevicePairingManager.startReceiverFlow(any()) } returns flowOf(
+            PairingState.Ready("c7m9x4b2", "{\"mailbox_id\":\"c7m9x4b2\"}", 300L)
         )
 
         viewModel.startDevicePairing()
         testScheduler.advanceUntilIdle()
 
-        assertTrue(viewModel.pairingState.value is PairingState.AwaitingJoin)
-        assertEquals("c7m9x4b2", (viewModel.pairingState.value as PairingState.AwaitingJoin).mailboxId)
+        assertTrue(viewModel.pairingState.value is PairingState.Ready)
+        assertEquals("c7m9x4b2", (viewModel.pairingState.value as PairingState.Ready).mailboxId)
+        val session = viewModel.activePairingSession.value
+        assertNotNull(session)
+        assertEquals("c7m9x4b2", session?.mailboxId)
+        assertEquals("{\"mailbox_id\":\"c7m9x4b2\"}", session?.qrPayloadJson)
+        assertEquals(300L, session?.expiresInSeconds)
+    }
+
+    @Test
+    fun `activePairingSession is preserved when pairing transitions to AwaitingFulfillment`() = runTest {
+        coEvery { mockDevicePairingManager.startReceiverFlow(any()) } returns flowOf(
+            PairingState.Ready("c7m9x4b2", "{\"mailbox_id\":\"c7m9x4b2\"}", 300L),
+            PairingState.AwaitingFulfillment
+        )
+
+        viewModel.startDevicePairing()
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(PairingState.AwaitingFulfillment, viewModel.pairingState.value)
+        val session = viewModel.activePairingSession.value
+        assertNotNull(session)
+        assertEquals("c7m9x4b2", session?.mailboxId)
+        assertEquals("{\"mailbox_id\":\"c7m9x4b2\"}", session?.qrPayloadJson)
     }
 
     @Test
@@ -772,6 +794,61 @@ class AuthViewModelTest {
 
         assertTrue(masterKey.isClosed)
         assertEquals(null, viewModel.pairingState.value)
+        assertEquals(null, viewModel.activePairingSession.value)
+    }
+
+    @Test
+    fun `linkWithPairingCode joins host mailbox when device lacks vault key`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockRepository.hasVaultKey() } returns false
+        coEvery {
+            mockDevicePairingManager.startJoinFlow("k8n2p4x9")
+        } returns flowOf(PairingState.Success(masterKey, "ticket-flow-b"))
+
+        viewModel.linkWithPairingCode("k8n2-p4x9")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Success)
+        assertEquals("ticket-flow-b", viewModel.lastRegistrationTicket.value)
+        masterKey.close()
+    }
+
+    @Test
+    fun `linkWithPairingCode fulfills peer mailbox when device has vault key`() = runTest {
+        every { mockRepository.hasVaultKey() } returns true
+        coEvery {
+            mockDevicePairingManager.fulfillSenderWithCode("c7m9x4b2")
+        } returns NetworkResult.Success(Unit)
+
+        viewModel.linkWithPairingCode("c7m9-x4b2")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Success)
+        assertEquals(false, (viewModel.state.value as AuthUiState.Success).isNewRegistration)
+    }
+
+    @Test
+    fun `linkWithPairingCode with invalid code length sets Error state`() = runTest {
+        viewModel.linkWithPairingCode("abc")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Error)
+        assertEquals("Pairing code must be 8 characters", (viewModel.state.value as AuthUiState.Error).message)
+    }
+
+    @Test
+    fun `linkWithScannedQr with plain 8-char code forwards to linkWithPairingCode`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockRepository.hasVaultKey() } returns false
+        coEvery {
+            mockDevicePairingManager.startJoinFlow("k8n2p4x9")
+        } returns flowOf(PairingState.Success(masterKey))
+
+        viewModel.linkWithScannedQr("k8n2-p4x9")
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Success)
+        masterKey.close()
     }
 
     @Test
@@ -781,6 +858,105 @@ class AuthViewModelTest {
 
         assertTrue(viewModel.state.value is AuthUiState.Error)
         assertTrue((viewModel.state.value as AuthUiState.Error).message.contains("Invalid pairing QR code"))
+    }
+
+    @Test
+    fun `when in VaultUnlockRequired and startDevicePairing called, state retains VaultUnlockRequired`() = runTest {
+        val mockContext: Context = mockk()
+        every { mockRepository.isLoggedIn() } returns false
+        coEvery {
+            mockPasskeyManager.loginWithPasskey(mockContext, any())
+        } returns PasskeyLoginResult.Success(
+            token = "passkey-token",
+            wrappedVaultKey = "envelope-hex-120-chars",
+            masterVaultKey = null
+        )
+
+        viewModel.loginWithPasskey(mockContext)
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.VaultUnlockRequired)
+
+        coEvery { mockDevicePairingManager.startReceiverFlow(any()) } returns emptyFlow()
+
+        viewModel.startDevicePairing()
+        testScheduler.advanceUntilIdle()
+
+        assertTrue("State must retain VaultUnlockRequired during pairing", viewModel.state.value is AuthUiState.VaultUnlockRequired)
+    }
+
+    @Test
+    fun `when pairing succeeds during VaultUnlockRequired, isNewRegistration is false`() = runTest {
+        val mockContext: Context = mockk()
+        every { mockRepository.isLoggedIn() } returns false
+        coEvery {
+            mockPasskeyManager.loginWithPasskey(mockContext, any())
+        } returns PasskeyLoginResult.Success(
+            token = "passkey-token",
+            wrappedVaultKey = "envelope-hex-120-chars",
+            masterVaultKey = null
+        )
+
+        viewModel.loginWithPasskey(mockContext)
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.VaultUnlockRequired)
+
+        val masterKey = MasterVaultKey.generate()
+        coEvery {
+            mockDevicePairingManager.startReceiverFlow(any())
+        } returns flowOf(PairingState.Success(masterKey, "new-reg-ticket"))
+
+        viewModel.startDevicePairing()
+        testScheduler.advanceUntilIdle()
+
+        val finalState = viewModel.state.value
+        assertTrue(finalState is AuthUiState.Success)
+        assertFalse("isNewRegistration must be false for vault unlock session", (finalState as AuthUiState.Success).isNewRegistration)
+        masterKey.close()
+    }
+
+    @Test
+    fun `when cancelDevicePairing called during VaultUnlockRequired, state retains VaultUnlockRequired`() = runTest {
+        val mockContext: Context = mockk()
+        every { mockRepository.isLoggedIn() } returns false
+        coEvery {
+            mockPasskeyManager.loginWithPasskey(mockContext, any())
+        } returns PasskeyLoginResult.Success(
+            token = "passkey-token",
+            wrappedVaultKey = "envelope-hex-120-chars",
+            masterVaultKey = null
+        )
+
+        viewModel.loginWithPasskey(mockContext)
+        testScheduler.advanceUntilIdle()
+
+        viewModel.cancelDevicePairing()
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.VaultUnlockRequired)
+    }
+
+    @Test
+    fun `when cancelVaultUnlock called, state resets to Idle and logs out`() = runTest {
+        val mockContext: Context = mockk()
+        every { mockRepository.isLoggedIn() } returns false
+        coEvery {
+            mockPasskeyManager.loginWithPasskey(mockContext, any())
+        } returns PasskeyLoginResult.Success(
+            token = "passkey-token",
+            wrappedVaultKey = "envelope-hex-120-chars",
+            masterVaultKey = null
+        )
+
+        viewModel.loginWithPasskey(mockContext)
+        testScheduler.advanceUntilIdle()
+
+        viewModel.cancelVaultUnlock()
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is AuthUiState.Idle)
+        verify(exactly = 1) { mockRepository.logout() }
     }
 
     @After

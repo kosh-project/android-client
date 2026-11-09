@@ -38,15 +38,25 @@ import androidx.compose.ui.text.AnnotatedString
 import android.Manifest
 import android.content.pm.PackageManager
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.HourglassBottom
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
 import project.kosh.core.crypto.Bip39Sas
 import project.kosh.core.auth.PairingState
+import project.kosh.core.model.ActivePairingSession
 import project.kosh.feature.auth.QrCodeGenerator
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -66,8 +76,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -123,15 +131,109 @@ fun AuthScreen(
     val serverConfig by viewModel.serverConfig.collectAsState()
     val hasStoredCredentials by viewModel.hasStoredCredentials.collectAsState()
     val pairingState by viewModel.pairingState.collectAsState()
+    val activePairingSession by viewModel.activePairingSession.collectAsState()
 
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val clipboardManager = LocalClipboardManager.current
 
+    val unlockRequiredState = state as? AuthUiState.VaultUnlockRequired
+    val isVaultUnlockIntent = unlockRequiredState != null
+
     var isRecoveryMode by remember { mutableStateOf(false) }
     var isLinkingMode by remember { mutableStateOf(false) }
+    var isVaultUnlockSession by remember { mutableStateOf(false) }
     var recoveryPassphrase by remember { mutableStateOf("") }
     var showScannerDialog by remember { mutableStateOf(false) }
+
+    var showManualPhraseInput by remember { mutableStateOf(false) }
+    var showManualCodeEntry by remember { mutableStateOf(false) }
+    var manualPairingCode by remember { mutableStateOf("") }
+    var unlockPassphrase by remember { mutableStateOf("") }
+    var unlockVisible by remember { mutableStateOf(false) }
+
+    var activeMailboxId by remember { mutableStateOf<String?>(null) }
+    var activeQrPayloadJson by remember { mutableStateOf<String?>(null) }
+    var isSessionExpired by remember(activePairingSession) { mutableStateOf(false) }
+
+    LaunchedEffect(state) {
+        if (state is AuthUiState.VaultUnlockRequired) {
+            isVaultUnlockSession = true
+            if (!isLinkingMode) {
+                isLinkingMode = true
+                viewModel.startDevicePairing()
+            }
+        }
+    }
+
+    LaunchedEffect(pairingState) {
+        when (val p = pairingState) {
+            is PairingState.Ready -> {
+                activeMailboxId = p.mailboxId
+                activeQrPayloadJson = p.qrPayloadJson
+            }
+            is PairingState.AwaitingJoin -> {
+                activeMailboxId = p.mailboxId
+                activeQrPayloadJson = p.qrPayloadJson
+            }
+            is PairingState.Error -> {
+                val err = p.message.lowercase()
+                if (err.contains("expire") || err.contains("timed out") || err.contains("404") || err.contains("401")) {
+                    isSessionExpired = true
+                }
+            }
+            null -> {
+                activeMailboxId = null
+                activeQrPayloadJson = null
+            }
+            else -> {}
+        }
+    }
+
+    LaunchedEffect(activePairingSession) {
+        if (activePairingSession == null) {
+            isSessionExpired = false
+            return@LaunchedEffect
+        }
+        val session = activePairingSession!!
+        while (true) {
+            val elapsedSec = (System.currentTimeMillis() - session.createdAtEpochMs) / 1000
+            if (elapsedSec >= session.expiresInSeconds) {
+                isSessionExpired = true
+                break
+            }
+            delay(1000L)
+        }
+    }
+
+    val blurRadius by animateDpAsState(
+        targetValue = if (isSessionExpired) 16.dp else 0.dp,
+        animationSpec = tween(durationMillis = 600),
+        label = "mailboxBlur"
+    )
+
+    val expiredOverlayAlpha by animateFloatAsState(
+        targetValue = if (isSessionExpired) 1f else 0f,
+        animationSpec = tween(durationMillis = 600),
+        label = "expiredOverlayAlpha"
+    )
+
+    BackHandler(isLinkingMode || isRecoveryMode) {
+        if (isLinkingMode) {
+            isLinkingMode = false
+            showManualPhraseInput = false
+            showManualCodeEntry = false
+            manualPairingCode = ""
+            if (isVaultUnlockIntent || isVaultUnlockSession) {
+                isVaultUnlockSession = false
+                viewModel.cancelVaultUnlock()
+            }
+            viewModel.cancelDevicePairing()
+        } else if (isRecoveryMode) {
+            isRecoveryMode = false
+            viewModel.resetState()
+        }
+    }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -160,7 +262,7 @@ fun AuthScreen(
     LaunchedEffect(state) {
         when (val s = state) {
             is AuthUiState.Success -> {
-                if (s.isNewRegistration) {
+                if (s.isNewRegistration && !isVaultUnlockSession) {
                     if (s.recoveryWords == null) {
                         onRegisterSuccess()
                     }
@@ -172,58 +274,8 @@ fun AuthScreen(
         }
     }
 
-    val topBarTitle = when {
-        isLinkingMode -> "Link Device"
-        isRecoveryMode -> "Recover Account"
-        hasStoredCredentials -> "Sign In"
-        else -> "Vault Access"
-    }
-
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = when {
-                                        isLinkingMode -> Icons.Default.Share
-                                        isRecoveryMode -> Icons.Default.Lock
-                                        else -> Icons.Default.AccountCircle
-                                    },
-                                    contentDescription = topBarTitle,
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Text(
-                            text = topBarTitle,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onChangeServer) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = "Server Settings",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        }
+        modifier = Modifier.fillMaxSize()
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -232,299 +284,443 @@ fun AuthScreen(
                 .background(MaterialTheme.colorScheme.background)
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                modifier = Modifier.fillMaxSize()
             ) {
-                // Playful Registration Progress Bar during active account creation (Step 1 of 4)
-                val isRegistering = (state as? AuthUiState.Loading)?.message?.let {
-                    it.contains("vault", ignoreCase = true) ||
-                    it.contains("recovery", ignoreCase = true) ||
-                    it.contains("account", ignoreCase = true) ||
-                    it.contains("PoW", ignoreCase = true)
-                } ?: false
-
-                if (isRegistering) {
-                    RegistrationProgressBar(
-                        currentStep = 1,
-                        totalSteps = 4,
-                        modifier = Modifier.padding(bottom = 16.dp)
-                    )
-                }
-
-                // Active Server Badge
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
+                // Sleek Top Header Row with status bar inset: Back on left (if linking/recovery), Server Pill on right
+                Row(
                     modifier = Modifier
-                        .padding(bottom = 20.dp)
-                        .clickable { onChangeServer() }
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = if (serverConfig.useTls) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(8.dp)
-                        ) {}
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = serverConfig.baseUrl,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                // Error Banner
-                AnimatedVisibility(
-                    visible = state is AuthUiState.Error,
-                    enter = fadeIn(),
-                    exit = fadeOut()
-                ) {
-                    val errorMessage = (state as? AuthUiState.Error)?.message ?: ""
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 16.dp),
-                        color = MaterialTheme.colorScheme.errorContainer,
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    if (isLinkingMode || isRecoveryMode) {
+                        IconButton(
+                            onClick = {
+                                if (isLinkingMode) {
+                                    isLinkingMode = false
+                                    showManualPhraseInput = false
+                                    showManualCodeEntry = false
+                                    manualPairingCode = ""
+                                    if (isVaultUnlockIntent || isVaultUnlockSession) {
+                                        isVaultUnlockSession = false
+                                        viewModel.cancelVaultUnlock()
+                                    }
+                                    viewModel.cancelDevicePairing()
+                                } else if (isRecoveryMode) {
+                                    isRecoveryMode = false
+                                    viewModel.resetState()
+                                }
+                            },
+                            modifier = Modifier.size(36.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = "Error",
-                                tint = MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.size(20.dp)
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Spacer(Modifier.width(10.dp))
+                        }
+                    } else {
+                        Spacer(Modifier.size(36.dp))
+                    }
+
+                    // Compact Clickable Server Address Pill on Top Right
+                    Surface(
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                        modifier = Modifier.clickable { onChangeServer() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = if (serverConfig.useTls) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(8.dp)
+                            ) {}
+                            Spacer(Modifier.width(6.dp))
                             Text(
-                                text = errorMessage,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                modifier = Modifier.weight(1f)
+                                text = serverConfig.baseUrl.removePrefix("https://").removePrefix("http://"),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            IconButton(
-                                onClick = { viewModel.resetState() },
-                                modifier = Modifier.size(24.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Dismiss",
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
                         }
                     }
                 }
 
-                // Loading State Indicator
-                if (state is AuthUiState.Loading) {
-                    val loadingText = (state as AuthUiState.Loading).message
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        CircularProgressIndicator(
-                            strokeWidth = 3.dp,
-                            modifier = Modifier.size(36.dp)
+                // Main Scrollable Area (fits in viewport without scrolling on standard screens)
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 24.dp, vertical = 6.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Playful Registration Progress Bar during active account creation (Step 1 of 4)
+                    val isRegistering = (state as? AuthUiState.Loading)?.message?.let {
+                        it.contains("vault", ignoreCase = true) ||
+                        it.contains("recovery", ignoreCase = true) ||
+                        it.contains("account", ignoreCase = true) ||
+                        it.contains("PoW", ignoreCase = true)
+                    } ?: false
+
+                    if (isRegistering) {
+                        RegistrationProgressBar(
+                            currentStep = 1,
+                            totalSteps = 4,
+                            modifier = Modifier.padding(bottom = 12.dp)
                         )
-                        Spacer(Modifier.height(10.dp))
-                        Text(
-                            text = loadingText,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(Modifier.height(16.dp))
                     }
-                }
 
-                val isSubmitting = state is AuthUiState.Loading
-
-                // Main Views: Linking Mode, Recovery Mode, or Standard Authentication
-                when {
-                    isLinkingMode -> {
-                        // Device Linking View
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally
+                    // Error Banner
+                    AnimatedVisibility(
+                        visible = state is AuthUiState.Error,
+                        enter = fadeIn(),
+                        exit = fadeOut()
+                    ) {
+                        val errorMessage = (state as? AuthUiState.Error)?.message ?: ""
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp),
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = RoundedCornerShape(14.dp)
                         ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                                modifier = Modifier.size(64.dp)
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = "Error",
+                                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    text = errorMessage,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = { viewModel.resetState() },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
                                     Icon(
-                                        imageVector = Icons.Default.Share,
-                                        contentDescription = "Link Device",
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.size(32.dp)
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Dismiss",
+                                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                                        modifier = Modifier.size(16.dp)
                                     )
                                 }
                             }
+                        }
+                    }
 
-                            Spacer(Modifier.height(16.dp))
-
+                    // Loading State Indicator
+                    if (state is AuthUiState.Loading) {
+                        val loadingText = (state as AuthUiState.Loading).message
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator(
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(32.dp)
+                            )
+                            Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "Link Device",
-                                style = MaterialTheme.typography.headlineSmall,
-                                fontWeight = FontWeight.Bold,
+                                text = loadingText,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center
                             )
+                            Spacer(Modifier.height(12.dp))
+                        }
+                    }
 
-                            Spacer(Modifier.height(6.dp))
+                    val isSubmitting = state is AuthUiState.Loading
 
-                            if (hasStoredCredentials) {
+                    // Main Views: Linking Mode, Recovery Mode, or Standard Authentication
+                    when {
+                        isLinkingMode -> {
+                            // Device Linking View
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    modifier = Modifier.size(48.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = if (isVaultUnlockIntent) Icons.Default.Lock else Icons.Default.Share,
+                                            contentDescription = if (isVaultUnlockIntent) "Retrieve Vault Key" else "Link Device",
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(24.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(Modifier.height(8.dp))
+
                                 Text(
-                                    text = "Scan this code with your new device, or scan a pairing QR code from that device.",
-                                    style = MaterialTheme.typography.bodyMedium,
+                                    text = if (isVaultUnlockIntent) "Retrieve Vault Key" else "Link Device",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+
+                                Spacer(Modifier.height(4.dp))
+
+                                Text(
+                                    text = when {
+                                        isVaultUnlockIntent -> "Your passkey was verified. Link with an authorized device to securely retrieve your Master Vault Key, or enter your recovery phrase below."
+                                        hasStoredCredentials -> "Scan this code with your new device, or scan a pairing QR code from that device."
+                                        else -> "Scan this code with your authorized device, or scan a pairing QR code from that device."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     textAlign = TextAlign.Center
                                 )
-                            } else {
-                                Text(
-                                    text = "Scan this code with your authorized device, or scan a pairing QR code from that device.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
 
-                            Spacer(Modifier.height(20.dp))
+                                Spacer(Modifier.height(14.dp))
 
-                            when (val pState = pairingState) {
-                                is PairingState.Ready, is PairingState.AwaitingJoin -> {
-                                    val (mailboxId, qrPayloadJson) = when (pState) {
-                                        is PairingState.Ready -> Pair(pState.mailboxId, pState.qrPayloadJson)
-                                        is PairingState.AwaitingJoin -> Pair(pState.mailboxId, pState.qrPayloadJson)
-                                    }
+                                val currentMailboxId = activePairingSession?.mailboxId ?: activeMailboxId
+                                val currentQrJson = activePairingSession?.qrPayloadJson ?: activeQrPayloadJson
 
-                                    // Mailbox Crockford Code
-                                    val formattedCode = if (mailboxId.length == 8) {
-                                        "${mailboxId.take(4).uppercase()} - ${mailboxId.drop(4).uppercase()}"
-                                    } else {
-                                        mailboxId.uppercase()
-                                    }
+                                val isError = pairingState is PairingState.Error && !isSessionExpired
 
-                                    Surface(
-                                        shape = RoundedCornerShape(16.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                clipboardManager.setText(AnnotatedString(mailboxId))
-                                                Toast.makeText(context, "Pairing code copied", Toast.LENGTH_SHORT).show()
-                                            }
+                                if (isError) {
+                                    Column(
+                                        modifier = Modifier.padding(16.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        Column(
-                                            modifier = Modifier.padding(16.dp),
-                                            horizontalAlignment = Alignment.CenterHorizontally
-                                        ) {
-                                            Text(
-                                                text = "PAIRING CODE",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                letterSpacing = 1.sp
-                                            )
-                                            Spacer(Modifier.height(4.dp))
-                                            Text(
-                                                text = formattedCode,
-                                                style = MaterialTheme.typography.headlineMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                fontFamily = FontFamily.Monospace,
-                                                letterSpacing = 3.sp,
-                                                color = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    }
-
-                                    Spacer(Modifier.height(16.dp))
-
-                                    // QR Code Display
-                                    val qrBitmap = remember(qrPayloadJson) {
-                                        try {
-                                            QrCodeGenerator.generate(qrPayloadJson, 400)
-                                        } catch (_: Exception) {
-                                            null
-                                        }
-                                    }
-
-                                    if (qrBitmap != null) {
                                         Surface(
-                                            shape = RoundedCornerShape(20.dp),
-                                            color = MaterialTheme.colorScheme.surface,
-                                            shadowElevation = 2.dp,
-                                            modifier = Modifier.size(220.dp)
+                                            shape = CircleShape,
+                                            color = MaterialTheme.colorScheme.errorContainer,
+                                            modifier = Modifier.size(44.dp)
                                         ) {
-                                            Box(
-                                                contentAlignment = Alignment.Center,
-                                                modifier = Modifier.padding(12.dp)
-                                            ) {
-                                                Image(
-                                                    bitmap = qrBitmap,
-                                                    contentDescription = "Pairing QR Code",
-                                                    modifier = Modifier.fillMaxSize()
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Warning,
+                                                    contentDescription = "Error",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(24.dp)
                                                 )
                                             }
                                         }
-                                    }
-
-                                    Spacer(Modifier.height(16.dp))
-
-                                    val statusMessage = if (pState is PairingState.AwaitingJoin) {
-                                        "Waiting for peer device to scan..."
-                                    } else {
-                                        "Waiting for authorization..."
-                                    }
-
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        CircularProgressIndicator(
-                                            strokeWidth = 2.dp,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(Modifier.width(8.dp))
+                                        Spacer(Modifier.height(10.dp))
                                         Text(
-                                            text = statusMessage,
+                                            text = "Pairing Session Error",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.error
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = (pairingState as PairingState.Error).message,
                                             style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = TextAlign.Center
                                         )
+                                        Spacer(Modifier.height(14.dp))
+                                        Button(
+                                            onClick = { viewModel.startDevicePairing() },
+                                            shape = RoundedCornerShape(24.dp)
+                                        ) {
+                                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(Modifier.width(8.dp))
+                                            Text("Retry")
+                                        }
                                     }
-                                }
+                                } else if (currentMailboxId != null && currentQrJson != null) {
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        // Mailbox Code and QR Code - with animated blur upon expiration
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .blur(blurRadius),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            // Mailbox Crockford Code
+                                            val formattedCode = if (currentMailboxId.length == 8) {
+                                                "${currentMailboxId.take(4).uppercase()} - ${currentMailboxId.drop(4).uppercase()}"
+                                            } else {
+                                                currentMailboxId.uppercase()
+                                            }
 
-                                is PairingState.AwaitingFulfillment -> {
+                                            Surface(
+                                                shape = RoundedCornerShape(14.dp),
+                                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clickable(enabled = !isSessionExpired) {
+                                                        clipboardManager.setText(AnnotatedString(currentMailboxId))
+                                                        Toast.makeText(context, "Pairing code copied", Toast.LENGTH_SHORT).show()
+                                                    }
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(10.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally
+                                                ) {
+                                                    Text(
+                                                        text = "PAIRING CODE",
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        letterSpacing = 1.sp
+                                                    )
+                                                    Spacer(Modifier.height(2.dp))
+                                                    Text(
+                                                        text = formattedCode,
+                                                        style = MaterialTheme.typography.headlineSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        letterSpacing = 2.sp,
+                                                        color = MaterialTheme.colorScheme.primary
+                                                    )
+                                                }
+                                            }
+
+                                            Spacer(Modifier.height(12.dp))
+
+                                            // QR Code Display (Compact 210dp surface)
+                                            val qrBitmap = remember(currentQrJson) {
+                                                try {
+                                                    QrCodeGenerator.generate(currentQrJson, 512)
+                                                } catch (_: Exception) {
+                                                    null
+                                                }
+                                            }
+
+                                            if (qrBitmap != null) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(16.dp),
+                                                    color = MaterialTheme.colorScheme.surface,
+                                                    shadowElevation = 2.dp,
+                                                    modifier = Modifier.size(210.dp)
+                                                ) {
+                                                    Box(
+                                                        contentAlignment = Alignment.Center,
+                                                        modifier = Modifier.padding(10.dp)
+                                                    ) {
+                                                        Image(
+                                                            bitmap = qrBitmap,
+                                                            contentDescription = "Pairing QR Code",
+                                                            modifier = Modifier.fillMaxSize()
+                                                        )
+                                                    }
+                                                }
+                                            }
+
+                                            Spacer(Modifier.height(10.dp))
+
+                                            val statusMessage = when (pairingState) {
+                                                is PairingState.AwaitingJoin -> "Waiting for peer device to scan..."
+                                                is PairingState.AwaitingFulfillment -> "Waiting for authorized device to scan..."
+                                                is PairingState.Success -> "Device authorized! Unlocking vault..."
+                                                else -> "Waiting for authorization..."
+                                            }
+
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                CircularProgressIndicator(
+                                                    strokeWidth = 2.dp,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Spacer(Modifier.width(8.dp))
+                                                Text(
+                                                    text = statusMessage,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+
+                                        // Expired Overlay with animated fade-in & Re-generate Mailbox Button
+                                        if (expiredOverlayAlpha > 0f) {
+                                            Surface(
+                                                shape = RoundedCornerShape(16.dp),
+                                                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f * expiredOverlayAlpha),
+                                                tonalElevation = 6.dp,
+                                                shadowElevation = 4.dp,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 8.dp)
+                                                    .graphicsLayer { alpha = expiredOverlayAlpha }
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(20.dp),
+                                                    horizontalAlignment = Alignment.CenterHorizontally
+                                                ) {
+                                                    Surface(
+                                                        shape = CircleShape,
+                                                        color = MaterialTheme.colorScheme.errorContainer,
+                                                        modifier = Modifier.size(44.dp)
+                                                    ) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Icon(
+                                                                imageVector = Icons.Default.HourglassBottom,
+                                                                contentDescription = "Expired",
+                                                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                                                modifier = Modifier.size(24.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                    Spacer(Modifier.height(10.dp))
+                                                    Text(
+                                                        text = "Pairing Session Expired",
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    Spacer(Modifier.height(4.dp))
+                                                    Text(
+                                                        text = "The QR code has expired for security.",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        textAlign = TextAlign.Center
+                                                    )
+                                                    Spacer(Modifier.height(14.dp))
+                                                    Button(
+                                                        onClick = {
+                                                            viewModel.startDevicePairing()
+                                                        },
+                                                        shape = RoundedCornerShape(24.dp),
+                                                        modifier = Modifier.height(48.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Refresh,
+                                                            contentDescription = null,
+                                                            modifier = Modifier.size(18.dp)
+                                                        )
+                                                        Spacer(Modifier.width(8.dp))
+                                                        Text(
+                                                            text = "Create New Mailbox",
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
                                     Column(
                                         modifier = Modifier.padding(24.dp),
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
-                                        CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
-                                        Spacer(Modifier.height(12.dp))
-                                        Text(
-                                            text = "Transferring master vault key...",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-
-                                else -> {
-                                    Column(
-                                        modifier = Modifier.padding(24.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
+                                        CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(36.dp))
                                         Spacer(Modifier.height(12.dp))
                                         Text(
                                             text = "Preparing pairing session...",
@@ -533,35 +729,196 @@ fun AuthScreen(
                                         )
                                     }
                                 }
+
+                                Spacer(Modifier.height(16.dp))
+
+                                // Action 1: Scan peer QR Code
+                                Button(
+                                    onClick = {
+                                        val hasPermission = ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.CAMERA
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                        if (hasPermission) {
+                                            showScannerDialog = true
+                                        } else {
+                                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                        }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp),
+                                    shape = RoundedCornerShape(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Share,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Scan QR Code", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                }
+
+                                Spacer(Modifier.height(8.dp))
+
+                                // Action 2: Enter Pairing Code manually (Bi-directional support without camera)
+                                if (!showManualCodeEntry) {
+                                    OutlinedButton(
+                                        onClick = { showManualCodeEntry = true },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp),
+                                        shape = RoundedCornerShape(24.dp)
+                                    ) {
+                                        Text("Enter Code from Authorized Device", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                    }
+                                } else {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                            RoundedCornerShape(16.dp)
+                                        )
+                                        .padding(16.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = "Enter 8-Character Pairing Code",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    OutlinedTextField(
+                                        value = manualPairingCode,
+                                        onValueChange = { if (it.length <= 10) manualPairingCode = it.uppercase() },
+                                        label = { Text("Pairing Code") },
+                                        placeholder = { Text("e.g. ABCD-EFGH") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    Spacer(Modifier.height(10.dp))
+                                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                        TextButton(onClick = {
+                                            showManualCodeEntry = false
+                                            manualPairingCode = ""
+                                        }) {
+                                            Text("Cancel")
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        Button(
+                                            onClick = {
+                                                viewModel.linkWithPairingCode(manualPairingCode)
+                                                showManualCodeEntry = false
+                                                manualPairingCode = ""
+                                            },
+                                            enabled = manualPairingCode.replace("-", "").trim().length == 8,
+                                            shape = RoundedCornerShape(20.dp)
+                                        ) {
+                                            Text("Join")
+                                        }
+                                    }
+                                }
                             }
 
-                            Spacer(Modifier.height(24.dp))
+                            // Action 3: Secondary option for Vault Unlock: Enter 24-word recovery phrase
+                            if (unlockRequiredState != null) {
+                                Spacer(Modifier.height(16.dp))
+                                HorizontalDivider(modifier = Modifier.fillMaxWidth(0.6f))
+                                Spacer(Modifier.height(16.dp))
 
-                            // Action: Scan peer QR Code
-                            Button(
-                                onClick = {
-                                    val hasPermission = ContextCompat.checkSelfPermission(
-                                        context,
-                                        Manifest.permission.CAMERA
-                                    ) == PackageManager.PERMISSION_GRANTED
-                                    if (hasPermission) {
-                                        showScannerDialog = true
-                                    } else {
-                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                if (!showManualPhraseInput) {
+                                    OutlinedButton(
+                                        onClick = { showManualPhraseInput = true },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(52.dp),
+                                        shape = RoundedCornerShape(26.dp)
+                                    ) {
+                                        Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text("Enter recovery phrase instead", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                                     }
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(56.dp),
-                                shape = RoundedCornerShape(28.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Share,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(Modifier.width(10.dp))
-                                Text("Scan QR Code", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                } else {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(
+                                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                                RoundedCornerShape(16.dp)
+                                            )
+                                            .padding(16.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text(
+                                            text = "Enter 24-Word Recovery Phrase",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        if (unlockRequiredState.errorMessage != null) {
+                                            Spacer(Modifier.height(6.dp))
+                                            Text(
+                                                text = unlockRequiredState.errorMessage,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.error,
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
+                                        Spacer(Modifier.height(10.dp))
+                                        OutlinedTextField(
+                                            value = unlockPassphrase,
+                                            onValueChange = { unlockPassphrase = it },
+                                            label = { Text("Recovery Phrase") },
+                                            placeholder = { Text("24 words separated by spaces") },
+                                            isError = unlockRequiredState.errorMessage != null,
+                                            enabled = !unlockRequiredState.isUnlocking,
+                                            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                                            trailingIcon = {
+                                                TextButton(
+                                                    onClick = { unlockVisible = !unlockVisible },
+                                                    enabled = !unlockRequiredState.isUnlocking
+                                                ) {
+                                                    Text(if (unlockVisible) "Hide" else "Show")
+                                                }
+                                            },
+                                            visualTransformation = if (unlockVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                            minLines = 2,
+                                            maxLines = 4,
+                                            singleLine = false,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .semantics { contentType = ContentType.Password },
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        Spacer(Modifier.height(12.dp))
+                                        Button(
+                                            onClick = {
+                                                focusManager.clearFocus()
+                                                viewModel.unlockVault(unlockRequiredState.wrappedVaultKey, unlockPassphrase)
+                                            },
+                                            enabled = unlockPassphrase.isNotBlank() && !unlockRequiredState.isUnlocking,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(48.dp),
+                                            shape = RoundedCornerShape(24.dp)
+                                        ) {
+                                            if (unlockRequiredState.isUnlocking) {
+                                                CircularProgressIndicator(
+                                                    strokeWidth = 2.dp,
+                                                    modifier = Modifier.size(18.dp),
+                                                    color = MaterialTheme.colorScheme.onPrimary
+                                                )
+                                                Spacer(Modifier.width(8.dp))
+                                                Text("Unlocking...")
+                                            } else {
+                                                Text("Unlock Vault")
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             Spacer(Modifier.height(12.dp))
@@ -569,13 +926,20 @@ fun AuthScreen(
                             TextButton(
                                 onClick = {
                                     isLinkingMode = false
+                                    showManualPhraseInput = false
+                                    showManualCodeEntry = false
+                                    manualPairingCode = ""
+                                    if (isVaultUnlockIntent || isVaultUnlockSession) {
+                                        isVaultUnlockSession = false
+                                        viewModel.cancelVaultUnlock()
+                                    }
                                     viewModel.cancelDevicePairing()
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(52.dp)
                             ) {
-                                Text("Back", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp)
+                                Text(if (isVaultUnlockIntent || isVaultUnlockSession) "Cancel" else "Back", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp)
                             }
                         }
                     }
@@ -731,9 +1095,9 @@ fun AuthScreen(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            KoshBrandLogo(size = 64.dp)
+                            KoshBrandLogo(size = 52.dp)
 
-                            Spacer(Modifier.height(16.dp))
+                            Spacer(Modifier.height(10.dp))
 
                             Text(
                                 text = "Kosh Vault",
@@ -742,7 +1106,7 @@ fun AuthScreen(
                                 textAlign = TextAlign.Center
                             )
 
-                            Spacer(Modifier.height(6.dp))
+                            Spacer(Modifier.height(4.dp))
 
                             Text(
                                 text = "Zero-Knowledge Personal Storage",
@@ -751,7 +1115,7 @@ fun AuthScreen(
                                 textAlign = TextAlign.Center
                             )
 
-                            Spacer(Modifier.height(32.dp))
+                            Spacer(Modifier.height(20.dp))
 
                             if (hasStoredCredentials) {
                                 // Device has credentials in Keystore: Show "Sign back in" as primary action
@@ -763,8 +1127,8 @@ fun AuthScreen(
                                     enabled = !isSubmitting,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(56.dp),
-                                    shape = RoundedCornerShape(28.dp)
+                                        .height(50.dp),
+                                    shape = RoundedCornerShape(25.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.AccountCircle,
@@ -772,10 +1136,10 @@ fun AuthScreen(
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(Modifier.width(10.dp))
-                                    Text("Sign back in", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    Text("Sign back in", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                                 }
 
-                                Spacer(Modifier.height(14.dp))
+                                Spacer(Modifier.height(10.dp))
 
                                 FilledTonalButton(
                                     onClick = {
@@ -787,8 +1151,8 @@ fun AuthScreen(
                                     enabled = !isSubmitting,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(56.dp),
-                                    shape = RoundedCornerShape(28.dp)
+                                        .height(50.dp),
+                                    shape = RoundedCornerShape(25.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Share,
@@ -796,10 +1160,10 @@ fun AuthScreen(
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Spacer(Modifier.width(10.dp))
-                                    Text("Link device", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                                    Text("Link device", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                                 }
 
-                                Spacer(Modifier.height(14.dp))
+                                Spacer(Modifier.height(10.dp))
 
                                 OutlinedButton(
                                     onClick = {
@@ -809,8 +1173,8 @@ fun AuthScreen(
                                     enabled = !isSubmitting,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(56.dp),
-                                    shape = RoundedCornerShape(28.dp)
+                                        .height(50.dp),
+                                    shape = RoundedCornerShape(25.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Lock,
@@ -818,7 +1182,7 @@ fun AuthScreen(
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Spacer(Modifier.width(10.dp))
-                                    Text("Create account", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                                    Text("Create account", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                                 }
                             } else {
                                 // Fresh install / no credentials in Keystore: Primary action is "Link device"
@@ -827,21 +1191,13 @@ fun AuthScreen(
                                         focusManager.clearFocus()
                                         viewModel.resetState()
                                         isLinkingMode = true
-                                        val hasPermission = ContextCompat.checkSelfPermission(
-                                            context,
-                                            Manifest.permission.CAMERA
-                                        ) == PackageManager.PERMISSION_GRANTED
-                                        if (hasPermission) {
-                                            showScannerDialog = true
-                                        } else {
-                                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                        }
+                                        viewModel.startDevicePairing()
                                     },
                                     enabled = !isSubmitting,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(56.dp),
-                                    shape = RoundedCornerShape(28.dp)
+                                        .height(50.dp),
+                                    shape = RoundedCornerShape(25.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Share,
@@ -849,10 +1205,10 @@ fun AuthScreen(
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(Modifier.width(10.dp))
-                                    Text("Link device", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                    Text("Link device", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                                 }
 
-                                Spacer(Modifier.height(14.dp))
+                                Spacer(Modifier.height(10.dp))
 
                                 OutlinedButton(
                                     onClick = {
@@ -862,8 +1218,8 @@ fun AuthScreen(
                                     enabled = !isSubmitting,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(56.dp),
-                                    shape = RoundedCornerShape(28.dp)
+                                        .height(50.dp),
+                                    shape = RoundedCornerShape(25.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Lock,
@@ -871,15 +1227,15 @@ fun AuthScreen(
                                         modifier = Modifier.size(18.dp)
                                     )
                                     Spacer(Modifier.width(10.dp))
-                                    Text("Create account", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                                    Text("Create account", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                                 }
                             }
 
-                            Spacer(Modifier.height(28.dp))
+                            Spacer(Modifier.height(18.dp))
 
-                            HorizontalDivider(modifier = Modifier.fillMaxWidth(0.6f))
+                            HorizontalDivider(modifier = Modifier.fillMaxWidth(0.5f))
 
-                            Spacer(Modifier.height(16.dp))
+                            Spacer(Modifier.height(10.dp))
 
                             // Recovery Link - Placed as the last option with clean, minimal text
                             TextButton(
@@ -902,94 +1258,9 @@ fun AuthScreen(
             }
         }
     }
+}
 
-    // Vault Unlock Modal Dialog
-    val unlockRequiredState = state as? AuthUiState.VaultUnlockRequired
-    if (unlockRequiredState != null) {
-        var unlockPassphrase by remember { mutableStateOf("") }
-        var unlockVisible by remember { mutableStateOf(false) }
 
-        AlertDialog(
-            onDismissRequest = { viewModel.cancelVaultUnlock() },
-            title = {
-                Text("Unlock vault", fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column {
-                    Text(
-                        text = "Enter your 24-word recovery phrase to decrypt your vault.",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-
-                    if (unlockRequiredState.errorMessage != null) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = unlockRequiredState.errorMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.Medium
-                        )
-                    }
-
-                    Spacer(Modifier.height(16.dp))
-                    OutlinedTextField(
-                        value = unlockPassphrase,
-                        onValueChange = { unlockPassphrase = it },
-                        label = { Text("Recovery Phrase") },
-                        placeholder = { Text("24-word recovery phrase") },
-                        isError = unlockRequiredState.errorMessage != null,
-                        enabled = !unlockRequiredState.isUnlocking,
-                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                        trailingIcon = {
-                            TextButton(
-                                onClick = { unlockVisible = !unlockVisible },
-                                enabled = !unlockRequiredState.isUnlocking
-                            ) {
-                                Text(if (unlockVisible) "Hide" else "Show")
-                            }
-                        },
-                        visualTransformation = if (unlockVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                        singleLine = false,
-                        minLines = 2,
-                        maxLines = 4,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .semantics { contentType = ContentType.Password },
-                        shape = RoundedCornerShape(12.dp)
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.unlockVault(unlockRequiredState.wrappedVaultKey, unlockPassphrase)
-                    },
-                    enabled = unlockPassphrase.isNotBlank() && !unlockRequiredState.isUnlocking,
-                    shape = RoundedCornerShape(20.dp)
-                ) {
-                    if (unlockRequiredState.isUnlocking) {
-                        CircularProgressIndicator(
-                            strokeWidth = 2.dp,
-                            modifier = Modifier.size(18.dp),
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Unlocking...")
-                    } else {
-                        Text("Unlock")
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { viewModel.cancelVaultUnlock() },
-                    enabled = !unlockRequiredState.isUnlocking
-                ) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
 
     // Embedded Camera QR Scanner Dialog for peer pairing
     if (showScannerDialog) {

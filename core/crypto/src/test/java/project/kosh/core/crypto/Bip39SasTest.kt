@@ -162,4 +162,32 @@ class Bip39SasTest {
         val normalized = Bip39Sas.normalizePhrase(numberedPhrase)
         assertTrue(Bip39Sas.isValidRecoveryPhrase(normalized))
     }
+
+    @Test
+    fun `extractWords handles bracketed numbers, parentheses, hash prefixes, and unicode whitespace`() {
+        val messyPhrase = """
+            [01] fuel  [02] airport   (3) foil  (4) harvest  #5: day  #6: mail
+            [7] soup  8. ahead  9) recipe  10- vague  11. nasty
+            12. light 13. casino 14. produce 15. legal 16. zoo
+            17. abandon 18. art 19. bubble 20. cactus 21. dial 22. eager 23. frame 24. galaxy
+        """.trimIndent()
+
+        val words = Bip39Sas.extractWords(messyPhrase)
+        assertEquals(24, words.size)
+        assertEquals("fuel", words[0])
+        assertEquals("airport", words[1])
+        assertEquals("foil", words[2])
+        assertEquals("harvest", words[3])
+        assertEquals("day", words[4])
+        assertEquals("mail", words[5])
+        assertEquals("soup", words[6])
+        assertEquals("ahead", words[7])
+        assertEquals("galaxy", words[23])
+
+        val unicodeMessy = "abandon\u00A0abandon\u2000abandon\u200Babandon\uFEFF abandon abandon abandon abandon abandon abandon abandon about"
+        val unicodeWords = Bip39Sas.extractWords(unicodeMessy)
+        assertEquals(12, unicodeWords.size)
+        assertEquals("abandon", unicodeWords[0])
+        assertEquals("about", unicodeWords[11])
+    }
 }

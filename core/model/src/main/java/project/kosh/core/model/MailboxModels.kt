@@ -219,3 +219,17 @@ data class PairingQrPayload(
     val mode: String? = null
 )
 
+/**
+ * Snapshot of an active ephemeral pairing session for display and animated blur lifecycle.
+ *
+ * @property mailboxId 8-character Crockford Base32 identifier.
+ * @property qrPayloadJson Serialized [PairingQrPayload] suitable for rendering as a QR code.
+ * @property expiresInSeconds Server-enforced TTL in seconds.
+ * @property createdAtEpochMs Epoch timestamp in milliseconds when the session was created.
+ */
+data class ActivePairingSession(
+    val mailboxId: String,
+    val qrPayloadJson: String,
+    val expiresInSeconds: Long,
+    val createdAtEpochMs: Long = System.currentTimeMillis()
+)

@@ -34,6 +34,9 @@ fun AppRouter(startDestination: String) {
                     navController.navigate("auth") {
                         popUpTo("server_setup") { inclusive = true }
                     }
+                },
+                onBack = {
+                    navController.popBackStack()
                 }
             )
         }

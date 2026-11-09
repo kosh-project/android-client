@@ -364,10 +364,17 @@ class InternalFidoAuthenticator @Inject constructor(
     }
 
     private fun saveCredential(record: EnrolledPasskeyRecord) {
-        val current = getAllCredentials().filter { it.credentialId != record.credentialId }
-        val updated = current + record
+        // Enforce that only the passkey of the last signed-in account is held locally
+        val current = getAllCredentials()
+        for (existing in current) {
+            if (existing.keyAlias != record.keyAlias) {
+                try {
+                    keyStoreProvider.deleteKey(existing.keyAlias)
+                } catch (_: Exception) {}
+            }
+        }
         prefs.edit {
-            putString("records", json.encodeToString(updated))
+            putString("records", json.encodeToString(listOf(record)))
         }
     }
 
@@ -377,7 +384,7 @@ class InternalFidoAuthenticator @Inject constructor(
             ?: return 1
         val newCount = record.signCount + 1
         val updatedRecord = record.copy(signCount = newCount)
-        val updatedList = current.filter { it.credentialId != credentialId } + updatedRecord
+        val updatedList = current.map { if (it.credentialId == credentialId) updatedRecord else it }
         prefs.edit {
             putString("records", json.encodeToString(updatedList))
         }
@@ -406,9 +413,8 @@ class InternalFidoAuthenticator @Inject constructor(
             if (matched != null) return matched
         }
 
-        // Discoverable resident key fallback: match rpId or pick the most recent
-        return all.firstOrNull { it.rpId.equals(rpId, ignoreCase = true) }
-            ?: all.maxByOrNull { it.createdAt }
+        // Discoverable resident key fallback: return the passkey of the last signed-in account (most recently enrolled)
+        return all.maxByOrNull { it.createdAt } ?: all.firstOrNull()
     }
 
     private fun parseChallengeJson(rawJson: String): JsonObject {
