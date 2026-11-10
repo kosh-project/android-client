@@ -13,6 +13,7 @@ ksp = "2.3.6"
 hilt = "2.59.2"
 okhttp = "5.2.0"
 kotlinxSerializationJson = "1.11.0"
+kotlinxSerializationProtobuf = "1.8.0"
 securityCrypto = "1.1.0"
 argon2kt = "1.6.0"
 hiltNavigationCompose = "1.4.0"
@@ -54,6 +55,7 @@ androidx-compose-material-icons-core = { group = "androidx.compose.material", na
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 androidx-test-core-ktx = { group = "androidx.test", name = "core-ktx", version.ref = "test" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+kotlinx-serialization-protobuf = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-protobuf", version.ref = "kotlinxSerializationProtobuf" }
 
 io-mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 org-jetbrains-kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "kotlinxCoroutinesTest" }

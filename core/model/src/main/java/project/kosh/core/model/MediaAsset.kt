@@ -17,6 +17,9 @@ import kotlinx.serialization.Serializable
  * @property createdAt Epoch timestamp when asset record was created locally.
  * @property updatedAt Epoch timestamp when asset record was last modified.
  * @property assetTag Storage domain tag in CAS vault (default: GALLERY_ITEM).
+ * @property lamportClock Logical clock value for CRDT ordering.
+ * @property deviceId Originating device ID.
+ * @property isDeleted Tombstone flag for distributed deletion.
  */
 @Serializable
 data class MediaAsset(
@@ -31,5 +34,8 @@ data class MediaAsset(
     val capturedAt: Long,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
-    val assetTag: AssetTag = AssetTag.GALLERY_ITEM
+    val assetTag: AssetTag = AssetTag.GALLERY_ITEM,
+    val lamportClock: Long = 0L,
+    val deviceId: String = "",
+    val isDeleted: Boolean = false
 )

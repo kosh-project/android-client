@@ -62,7 +62,7 @@ class MediaModelsTest {
     fun mediaCryptoMapping_serializationRoundTrip() {
         val crypto = MediaCryptoMapping(
             fileId = "f-123",
-            plaintextHash = "plain-blake3-hash",
+            plaintextSha256 = "plain-blake3-hash",
             ciphertextHash = "cas-blake3-hash",
             thumbnailCiphertextHash = "thumb-cas-blake3-hash",
             wrappedDek = "0123456789abcdef".repeat(7) + "01234567",

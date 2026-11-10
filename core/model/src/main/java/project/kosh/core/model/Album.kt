@@ -11,6 +11,9 @@ import kotlinx.serialization.Serializable
  * @property coverFileId Optional foreign key referencing cover [MediaAsset.fileId].
  * @property createdAt Epoch timestamp when the album was created.
  * @property updatedAt Epoch timestamp when the album was last updated.
+ * @property lamportClock Logical clock value for CRDT ordering.
+ * @property deviceId Originating device ID.
+ * @property isDeleted Tombstone flag for distributed deletion.
  */
 @Serializable
 data class Album(
@@ -19,5 +22,8 @@ data class Album(
     val description: String? = null,
     val coverFileId: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val lamportClock: Long = 0L,
+    val deviceId: String = "",
+    val isDeleted: Boolean = false
 )

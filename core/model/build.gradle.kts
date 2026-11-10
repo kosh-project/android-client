@@ -8,6 +8,7 @@ plugins {
 
 dependencies {
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.kotlinx.serialization.protobuf)
     testImplementation(libs.junit)
 }
 
