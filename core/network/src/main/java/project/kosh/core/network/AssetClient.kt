@@ -8,8 +8,11 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.Dispatcher
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import project.kosh.core.model.AssetCursor
 import project.kosh.core.model.AssetPage
 import project.kosh.core.model.AssetTag
@@ -63,6 +66,82 @@ class AssetClient @Inject constructor(
     ): NetworkResult<String> = withContext(Dispatchers.IO) {
         val baseUrl = getBaseUrl()
         val requestBody = StreamingUriRequestBody(contentResolver, uri)
+
+        val request = Request.Builder()
+            .url("$baseUrl/upload/${tag.id}")
+            .addHeader("X-File-Name", originalFileName)
+            .post(requestBody)
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                val bodyText = response.body.string()
+                if (!response.isSuccessful) {
+                    return@use NetworkResult.fromHttp(response.code, bodyText)
+                }
+
+                val uploadResponse = json.decodeFromString<UploadResponse>(bodyText)
+                val hash = uploadResponse.hash
+
+                if (!uploadResponse.isSuccess || hash == null) {
+                    return@use NetworkResult.fromHttp(500, bodyText)
+                }
+
+                NetworkResult.Success(hash)
+            }
+        } catch (e: Exception) {
+            NetworkResult.fromThrowable(e)
+        }
+    }
+
+    /**
+     * Uploads in-memory encrypted bytes directly to the server CAS vault.
+     */
+    suspend fun uploadBytes(
+        bytes: ByteArray,
+        tag: AssetTag,
+        originalFileName: String
+    ): NetworkResult<String> = withContext(Dispatchers.IO) {
+        val baseUrl = getBaseUrl()
+        val requestBody = bytes.toRequestBody("application/octet-stream".toMediaType())
+
+        val request = Request.Builder()
+            .url("$baseUrl/upload/${tag.id}")
+            .addHeader("X-File-Name", originalFileName)
+            .post(requestBody)
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                val bodyText = response.body.string()
+                if (!response.isSuccessful) {
+                    return@use NetworkResult.fromHttp(response.code, bodyText)
+                }
+
+                val uploadResponse = json.decodeFromString<UploadResponse>(bodyText)
+                val hash = uploadResponse.hash
+
+                if (!uploadResponse.isSuccess || hash == null) {
+                    return@use NetworkResult.fromHttp(500, bodyText)
+                }
+
+                NetworkResult.Success(hash)
+            }
+        } catch (e: Exception) {
+            NetworkResult.fromThrowable(e)
+        }
+    }
+
+    /**
+     * Uploads an encrypted file directly to the server CAS vault.
+     */
+    suspend fun uploadFile(
+        file: File,
+        tag: AssetTag,
+        originalFileName: String
+    ): NetworkResult<String> = withContext(Dispatchers.IO) {
+        val baseUrl = getBaseUrl()
+        val requestBody = file.asRequestBody("application/octet-stream".toMediaType())
 
         val request = Request.Builder()
             .url("$baseUrl/upload/${tag.id}")

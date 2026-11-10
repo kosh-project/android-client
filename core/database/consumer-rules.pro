@@ -10,6 +10,9 @@
 -keep @androidx.room.Dao interface * {
     *;
 }
+-keep @androidx.room.Dao class * {
+    *;
+}
 -keep class * implements androidx.room.RoomDatabase$Callback {
     *;
 }
