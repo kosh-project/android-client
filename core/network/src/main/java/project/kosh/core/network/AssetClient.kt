@@ -100,10 +100,12 @@ class AssetClient @Inject constructor(
     suspend fun uploadBytes(
         bytes: ByteArray,
         tag: AssetTag,
-        originalFileName: String
+        originalFileName: String,
+        onProgress: ((bytesWritten: Long, totalBytes: Long) -> Unit)? = null
     ): NetworkResult<String> = withContext(Dispatchers.IO) {
         val baseUrl = getBaseUrl()
-        val requestBody = bytes.toRequestBody("application/octet-stream".toMediaType())
+        val rawBody = bytes.toRequestBody("application/octet-stream".toMediaType())
+        val requestBody = if (onProgress != null) ProgressRequestBody(rawBody, onProgress) else rawBody
 
         val request = Request.Builder()
             .url("$baseUrl/upload/${tag.id}")
@@ -138,10 +140,12 @@ class AssetClient @Inject constructor(
     suspend fun uploadFile(
         file: File,
         tag: AssetTag,
-        originalFileName: String
+        originalFileName: String,
+        onProgress: ((bytesWritten: Long, totalBytes: Long) -> Unit)? = null
     ): NetworkResult<String> = withContext(Dispatchers.IO) {
         val baseUrl = getBaseUrl()
-        val requestBody = file.asRequestBody("application/octet-stream".toMediaType())
+        val rawBody = file.asRequestBody("application/octet-stream".toMediaType())
+        val requestBody = if (onProgress != null) ProgressRequestBody(rawBody, onProgress) else rawBody
 
         val request = Request.Builder()
             .url("$baseUrl/upload/${tag.id}")
