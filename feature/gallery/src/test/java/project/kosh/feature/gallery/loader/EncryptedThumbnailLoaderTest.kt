@@ -240,4 +240,46 @@ class EncryptedThumbnailLoaderTest {
 
         tempFile.delete()
     }
+
+    @Test
+    fun loadLocalThumbnail_subSamplesLargeBitmaps() {
+        // Create 1024x1024 bitmap
+        val largeBitmap = Bitmap.createBitmap(1024, 1024, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        largeBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val bytes = stream.toByteArray()
+
+        val tempFile = File(context.cacheDir, "large_local_test.png").apply { writeBytes(bytes) }
+        val uri = android.net.Uri.fromFile(tempFile)
+
+        val result = loader.loadLocalThumbnail(context.contentResolver, uri, "large-123")
+        assertNotNull(result)
+        // With targetSize = 256, inSampleSize is 4 for 1024px, resulting in <= 256px
+        assertTrue(result!!.width <= 512)
+        assertTrue(result.height <= 512)
+        assertEquals(result, loader.memoryCache.get("large-123"))
+
+        tempFile.delete()
+    }
+
+    @Test
+    fun loadLocalUriPreview_cachesKeyedByUriString() {
+        val testBitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val bytes = stream.toByteArray()
+
+        val tempFile = File(context.cacheDir, "uri_preview_test.png").apply { writeBytes(bytes) }
+        val uri = android.net.Uri.fromFile(tempFile)
+
+        val result = loader.loadLocalUriPreview(context.contentResolver, uri, targetSize = 180)
+        assertNotNull(result)
+        assertEquals(result, loader.memoryCache.get(uri.toString()))
+
+        // Subsequent call returns cached bitmap directly without re-reading
+        val cachedResult = loader.loadLocalUriPreview(context.contentResolver, uri, targetSize = 180)
+        assertEquals(result, cachedResult)
+
+        tempFile.delete()
+    }
 }

@@ -36,6 +36,7 @@ import project.kosh.core.database.model.MediaWithCryptoDetails
 import project.kosh.core.database.repository.MediaRepository
 import project.kosh.core.model.MediaAsset
 import project.kosh.core.model.NetworkResult
+import project.kosh.core.model.UploadStatus
 import project.kosh.core.network.AssetClient
 import project.kosh.feature.gallery.loader.EncryptedThumbnailLoader
 import project.kosh.feature.gallery.model.DiscoveredMediaItem
@@ -150,6 +151,7 @@ class GalleryViewModelTest {
                 mediaType = any(),
                 originalFileName = any(),
                 customFileId = any(),
+                customCapturedAt = any(),
                 onProgress = any()
             )
         } returns UploadResult.Success(mockAsset, false)
@@ -177,6 +179,7 @@ class GalleryViewModelTest {
                 mediaType = any(),
                 originalFileName = any(),
                 customFileId = any(),
+                customCapturedAt = any(),
                 onProgress = any()
             )
         } returns UploadResult.Error("Network failure")
@@ -246,7 +249,7 @@ class GalleryViewModelTest {
             )
         )
         coEvery {
-            mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any())
+            mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any())
         } returns UploadResult.Success(mockAsset, false)
 
         viewModel.saveFolderSelection(setOf("bucket-camera"), mockResolver)
@@ -412,13 +415,14 @@ class GalleryViewModelTest {
                 mediaType = any(),
                 originalFileName = any(),
                 customFileId = any(),
+                customCapturedAt = any(),
                 onProgress = any()
             )
         } answers {
             val fileId = arg<String?>(5)
             assertNotNull(fileId)
 
-            val progressCallback = arg<((project.kosh.core.model.UploadStage) -> Unit)?>(6)
+            val progressCallback = arg<((project.kosh.core.model.UploadStage) -> Unit)?>(7)
             progressCallback?.invoke(project.kosh.core.model.UploadStage.Hashing(0.5f))
             assertEquals(project.kosh.core.model.UploadStage.Hashing(0.5f), viewModel.activeUploadStages.value[fileId])
 
@@ -437,6 +441,262 @@ class GalleryViewModelTest {
         val finalUploadState = viewModel.uploadState.value
         assertTrue(finalUploadState is UploadUiState.Success)
         assertEquals("Stored in vault", (finalUploadState as UploadUiState.Success).message)
+    }
+
+    @Test
+    fun `InFlightUploadItem preserves metadata and maps correctly to MediaWithCryptoDetails`() {
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val mockUri: Uri = mockk(relaxed = true)
+        val inFlight = InFlightUploadItem(
+            fileId = "item-test-uuid",
+            uri = mockUri,
+            fileName = "vacation.png",
+            contentResolver = mockResolver,
+            dateModified = 1700000000000L,
+            mimeType = "image/png",
+            fileSize = 4096L
+        )
+
+        val mediaWithCrypto = inFlight.toMediaWithCryptoDetails()
+
+        assertEquals("item-test-uuid", mediaWithCrypto.asset.fileId)
+        assertEquals("image/png", mediaWithCrypto.asset.mediaType)
+        assertEquals(4096L, mediaWithCrypto.asset.fileSize)
+        assertEquals(1700000000000L, mediaWithCrypto.asset.capturedAt)
+        assertEquals(UploadStatus.UPLOADING, mediaWithCrypto.cryptoMapping?.uploadStatus)
+    }
+
+    @Test
+    fun `saveFolderSelection passes task dateModified as customCapturedAt to uploadFromUri`() = runTest {
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        val mockAsset: MediaAsset = mockk(relaxed = true)
+        val testUri = mockk<Uri>(relaxed = true)
+        val capturedAtCaptured = mutableListOf<Long?>()
+        val mediaTypeCaptured = mutableListOf<String?>()
+
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+        coEvery {
+            mockMediaFolderScanner.queryMediaInFolder("camera-bucket")
+        } returns listOf(
+            DiscoveredMediaItem(
+                id = 999L,
+                uri = testUri,
+                displayName = "sunset.jpg",
+                mimeType = "image/jpeg",
+                size = 2048L,
+                dateModified = 1699999999000L,
+                bucketId = "camera-bucket"
+            )
+        )
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(
+                contentResolver = any(),
+                uri = any(),
+                masterVaultKey = any(),
+                mediaType = any(),
+                originalFileName = any(),
+                customFileId = any(),
+                customCapturedAt = any(),
+                onProgress = any()
+            )
+        } answers {
+            mediaTypeCaptured.add(arg<String?>(3))
+            capturedAtCaptured.add(arg<Long?>(6))
+            UploadResult.Success(mockAsset, false)
+        }
+
+        viewModel.saveFolderSelection(setOf("camera-bucket"), mockResolver)
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(1, capturedAtCaptured.size)
+        assertEquals(1699999999000L, capturedAtCaptured[0])
+        assertEquals("image/jpeg", mediaTypeCaptured[0])
+    }
+
+    @Test
+    fun `galleryItems sorts in-flight and persisted items deterministically by capturedAt desc then fileId desc`() = runTest {
+        val p1 = MediaWithCryptoDetails(
+            asset = project.kosh.core.database.entity.MediaAssetEntity(
+                fileId = "persisted-old",
+                mediaType = "image/jpeg",
+                fileSize = 100L,
+                capturedAt = 1000L
+            ),
+            cryptoMapping = null
+        )
+        val p2 = MediaWithCryptoDetails(
+            asset = project.kosh.core.database.entity.MediaAssetEntity(
+                fileId = "persisted-new",
+                mediaType = "image/jpeg",
+                fileSize = 200L,
+                capturedAt = 3000L
+            ),
+            cryptoMapping = null
+        )
+        val p3SameTimeA = MediaWithCryptoDetails(
+            asset = project.kosh.core.database.entity.MediaAssetEntity(
+                fileId = "persisted-same-a",
+                mediaType = "image/jpeg",
+                fileSize = 300L,
+                capturedAt = 2000L
+            ),
+            cryptoMapping = null
+        )
+
+        every { mockMediaRepository.observeAllMediaWithCrypto() } returns flowOf(listOf(p1, p2, p3SameTimeA))
+
+        val vm = createViewModel()
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val testUri = mockk<Uri>(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any())
+        } coAnswers {
+            kotlinx.coroutines.delay(10000L)
+            UploadResult.Success(mockk(relaxed = true), false)
+        }
+
+        coEvery {
+            mockMediaFolderScanner.queryMediaInFolder("camera-bucket")
+        } returns listOf(
+            DiscoveredMediaItem(
+                id = 555L,
+                uri = testUri,
+                displayName = "inflight.jpg",
+                mimeType = "image/jpeg",
+                size = 150L,
+                dateModified = 2000L,
+                bucketId = "camera-bucket"
+            )
+        )
+
+        val itemsJob = launch(UnconfinedTestDispatcher(testScheduler)) {
+            vm.galleryItems.collect()
+        }
+
+        vm.saveFolderSelection(setOf("camera-bucket"), mockResolver)
+        testScheduler.runCurrent()
+
+        val items = vm.galleryItems.value
+        assertEquals(4, items.size)
+        // 1st: capturedAt = 3000L ("persisted-new")
+        assertEquals(3000L, items[0].asset.capturedAt)
+        assertEquals("persisted-new", items[0].asset.fileId)
+        // 2nd and 3rd: capturedAt = 2000L, sorted by fileId descending
+        assertEquals(2000L, items[1].asset.capturedAt)
+        assertEquals(2000L, items[2].asset.capturedAt)
+        assertTrue(items[1].asset.fileId > items[2].asset.fileId)
+        // 4th: capturedAt = 1000L ("persisted-old")
+        assertEquals(1000L, items[3].asset.capturedAt)
+        assertEquals("persisted-old", items[3].asset.fileId)
+
+        itemsJob.cancel()
+    }
+
+    @Test
+    fun `batch upload resets isUploading to false and counts to zero when batch finishes`() = runTest {
+        val vm = createViewModel()
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val testUri = mockk<Uri>(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns UploadResult.Success(mockk(relaxed = true), false)
+
+        coEvery {
+            mockMediaFolderScanner.queryMediaInFolder("camera-bucket")
+        } returns listOf(
+            DiscoveredMediaItem(
+                id = 101L,
+                uri = testUri,
+                displayName = "photo.jpg",
+                mimeType = "image/jpeg",
+                size = 100L,
+                dateModified = 1000L,
+                bucketId = "camera-bucket"
+            )
+        )
+
+        vm.saveFolderSelection(setOf("camera-bucket"), mockResolver)
+        testScheduler.advanceUntilIdle()
+
+        assertFalse(vm.batchUploadState.value.isUploading)
+        assertEquals(0, vm.batchUploadState.value.totalItems)
+        assertEquals(0, vm.batchUploadState.value.completedItems)
+    }
+
+    @Test
+    fun `saveFolderSelection ignores URIs that are already in flight`() = runTest {
+        val vm = createViewModel()
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val testUri = mockk<Uri>(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any())
+        } coAnswers {
+            kotlinx.coroutines.delay(10000L)
+            UploadResult.Success(mockk(relaxed = true), false)
+        }
+
+        coEvery {
+            mockMediaFolderScanner.queryMediaInFolder("camera-bucket")
+        } returns listOf(
+            DiscoveredMediaItem(
+                id = 101L,
+                uri = testUri,
+                displayName = "photo.jpg",
+                mimeType = "image/jpeg",
+                size = 100L,
+                dateModified = 1000L,
+                bucketId = "camera-bucket"
+            )
+        )
+
+        // First folder selection enqueues the item
+        vm.saveFolderSelection(setOf("camera-bucket"), mockResolver)
+        testScheduler.runCurrent()
+        assertEquals(1, vm.batchUploadState.value.totalItems)
+
+        // Second folder selection with same URI should be ignored and not double-queued
+        vm.saveFolderSelection(setOf("camera-bucket"), mockResolver)
+        testScheduler.runCurrent()
+        assertEquals(1, vm.batchUploadState.value.totalItems)
+    }
+
+    @Test
+    fun `processSingleUpload cleans up in-flight item when master key is locked`() = runTest {
+        val vm = createViewModel()
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val testUri = mockk<Uri>(relaxed = true)
+        every { mockAuthRepository.getVaultKey() } returns null
+
+        coEvery {
+            mockMediaFolderScanner.queryMediaInFolder("camera-bucket")
+        } returns listOf(
+            DiscoveredMediaItem(
+                id = 101L,
+                uri = testUri,
+                displayName = "photo.jpg",
+                mimeType = "image/jpeg",
+                size = 100L,
+                dateModified = 1000L,
+                bucketId = "camera-bucket"
+            )
+        )
+
+        vm.saveFolderSelection(setOf("camera-bucket"), mockResolver)
+        testScheduler.advanceUntilIdle()
+
+        assertTrue(vm.uploadState.value is UploadUiState.Error)
+        assertEquals(0, vm.galleryItems.value.size)
     }
 
     @After

@@ -49,8 +49,8 @@ import project.kosh.core.model.UploadStatus
  * with dual-phase upload progress animation.
  *
  * Visual Stages:
- * 1. Phase 1 (Hashing): 20% black veil shrinking *upwards* towards the top edge.
- * 2. Phase 2 (Upload): 20% black rectangle rising *from bottom* towards the top edge.
+ * 1. Phase 1 (Hashing): 38% black veil shrinking *upwards* towards the top edge.
+ * 2. Phase 2 (Upload): 38% black rectangle rising *from bottom* towards the top edge.
  * 3. Phase 3 (Done): Smooth fade-out reveal upon upload completion.
  */
 @Composable
@@ -100,7 +100,7 @@ fun GalleryItemTile(
             }
         }
 
-        // Phase 1: Hashing Veil (20% opacity, shrinks UPWARDS to top)
+        // Phase 1: Hashing Veil (38% opacity, shrinks UPWARDS to top)
         val isHashing = uploadStage is UploadStage.Hashing
         val hashProgress = (uploadStage as? UploadStage.Hashing)?.progress ?: 1f
         val animatedHashHeight by animateFloatAsState(
@@ -115,11 +115,11 @@ fun GalleryItemTile(
                     .fillMaxWidth()
                     .fillMaxHeight(animatedHashHeight)
                     .align(Alignment.TopCenter)
-                    .background(Color.Black.copy(alpha = 0.20f))
+                    .background(Color.Black.copy(alpha = 0.38f))
             )
         }
 
-        // Phase 2: Upload Veil (20% opacity, rises FROM BOTTOM to 100%)
+        // Phase 2: Upload Veil (38% opacity, rises FROM BOTTOM to 100%)
         val isUploading = (uploadStage is UploadStage.Uploading || uploadStage is UploadStage.Finalizing) && !showCompletedFlash
         val uploadProgress = (uploadStage as? UploadStage.Uploading)?.progress ?: if (uploadStage is UploadStage.Finalizing) 1f else 0f
         val animatedUploadHeight by animateFloatAsState(
@@ -134,7 +134,7 @@ fun GalleryItemTile(
                     .fillMaxWidth()
                     .fillMaxHeight(animatedUploadHeight)
                     .align(Alignment.BottomCenter)
-                    .background(Color.Black.copy(alpha = 0.20f))
+                    .background(Color.Black.copy(alpha = 0.38f))
             )
         }
 
@@ -147,7 +147,7 @@ fun GalleryItemTile(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.20f)),
+                    .background(Color.Black.copy(alpha = 0.38f)),
                 contentAlignment = Alignment.Center
             ) {
                 Surface(

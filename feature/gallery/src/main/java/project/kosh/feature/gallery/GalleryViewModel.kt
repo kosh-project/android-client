@@ -40,6 +40,7 @@ import project.kosh.core.model.UploadStatus
 import project.kosh.core.network.AssetClient
 import project.kosh.feature.gallery.loader.EncryptedThumbnailLoader
 import project.kosh.feature.gallery.model.BatchUploadState
+import project.kosh.feature.gallery.model.DiscoveredMediaItem
 import project.kosh.feature.gallery.model.MediaFolder
 import project.kosh.feature.gallery.sync.MediaFolderScanner
 import project.kosh.feature.gallery.sync.SyncFolderPreferences
@@ -63,15 +64,18 @@ data class InFlightUploadItem(
     val fileId: String,
     val uri: Uri,
     val fileName: String,
-    val contentResolver: ContentResolver
+    val contentResolver: ContentResolver,
+    val dateModified: Long = System.currentTimeMillis(),
+    val mimeType: String = "image/jpeg",
+    val fileSize: Long = 0L
 ) {
     fun toMediaWithCryptoDetails(): MediaWithCryptoDetails =
         MediaWithCryptoDetails(
             asset = MediaAssetEntity(
                 fileId = fileId,
-                mediaType = "image/jpeg",
-                fileSize = 0L,
-                capturedAt = System.currentTimeMillis()
+                mediaType = mimeType,
+                fileSize = fileSize,
+                capturedAt = dateModified
             ),
             cryptoMapping = MediaCryptoMappingEntity(
                 fileId = fileId,
@@ -95,7 +99,7 @@ class GalleryViewModel @Inject constructor(
     private val mediaUploadPipeline: MediaUploadPipeline,
     private val mediaFolderScanner: MediaFolderScanner,
     private val syncFolderPreferences: SyncFolderPreferences,
-    private val thumbnailLoader: EncryptedThumbnailLoader
+    val thumbnailLoader: EncryptedThumbnailLoader
 ) : ViewModel() {
 
     internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
@@ -116,7 +120,10 @@ class GalleryViewModel @Inject constructor(
             val inFlightItems = inFlightMap.values
                 .filter { it.fileId !in persistedFileIds }
                 .map { it.toMediaWithCryptoDetails() }
-            inFlightItems + persistedList
+            (inFlightItems + persistedList).sortedWith(
+                compareByDescending<MediaWithCryptoDetails> { it.asset.capturedAt }
+                    .thenByDescending { it.asset.fileId }
+            )
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -188,22 +195,45 @@ class GalleryViewModel @Inject constructor(
     fun enqueueUploads(contentResolver: ContentResolver, uris: List<Uri>) {
         if (uris.isEmpty()) return
 
-        totalBatchCount += uris.size
-        _batchUploadState.value = _batchUploadState.value.copy(
-            totalItems = totalBatchCount,
-            completedItems = completedBatchCount,
-            isUploading = true
-        )
+        viewModelScope.launch(ioDispatcher) {
+            val inFlightUris = _inFlightUploads.value.values.map { it.uri }.toSet()
+            val uniqueUris = uris.distinct().filter { it !in inFlightUris }
+            if (uniqueUris.isEmpty()) return@launch
 
-        for (uri in uris) {
-            val fileName = queryName(contentResolver, uri) ?: "kosh_${System.currentTimeMillis()}.jpg"
-            val fileId = UUID.randomUUID().toString()
-            val task = InFlightUploadItem(fileId, uri, fileName, contentResolver)
-            _inFlightUploads.value = _inFlightUploads.value + (fileId to task)
-            uploadChannel.trySend(task)
+            val newTasks = mutableListOf<InFlightUploadItem>()
+            val newTasksMap = mutableMapOf<String, InFlightUploadItem>()
+
+            for (uri in uniqueUris) {
+                val (fileName, fileSize) = queryNameAndSize(contentResolver, uri)
+                val mimeType = contentResolver.getType(uri) ?: "image/jpeg"
+                val fileId = UUID.randomUUID().toString()
+                val task = InFlightUploadItem(
+                    fileId = fileId,
+                    uri = uri,
+                    fileName = fileName ?: "kosh_${System.currentTimeMillis()}.jpg",
+                    contentResolver = contentResolver,
+                    mimeType = mimeType,
+                    fileSize = fileSize
+                )
+                newTasks.add(task)
+                newTasksMap[fileId] = task
+            }
+
+            totalBatchCount += uniqueUris.size
+            _batchUploadState.value = _batchUploadState.value.copy(
+                totalItems = totalBatchCount,
+                completedItems = completedBatchCount,
+                isUploading = true
+            )
+
+            _inFlightUploads.value = _inFlightUploads.value + newTasksMap
+
+            for (task in newTasks) {
+                uploadChannel.trySend(task)
+            }
+
+            ensureUploadWorkerRunning()
         }
-
-        ensureUploadWorkerRunning()
     }
 
     /**
@@ -219,14 +249,17 @@ class GalleryViewModel @Inject constructor(
         uploadWorkerJob = viewModelScope.launch(ioDispatcher) {
             for (task in uploadChannel) {
                 processSingleUpload(task)
+                if (completedBatchCount >= totalBatchCount) {
+                    _batchUploadState.value = _batchUploadState.value.copy(
+                        isUploading = false,
+                        totalItems = 0,
+                        completedItems = 0,
+                        currentStage = UploadStage.Completed
+                    )
+                    totalBatchCount = 0
+                    completedBatchCount = 0
+                }
             }
-            // All tasks finished
-            _batchUploadState.value = _batchUploadState.value.copy(
-                isUploading = false,
-                currentStage = UploadStage.Completed
-            )
-            totalBatchCount = 0
-            completedBatchCount = 0
         }
     }
 
@@ -234,9 +267,13 @@ class GalleryViewModel @Inject constructor(
         val masterKey = authRepository.getVaultKey()
 
         if (masterKey == null) {
+            completedBatchCount++
             val errorStage = UploadStage.Failed("Master Vault Key locked. Please sign in.")
             _activeUploadStages.value = _activeUploadStages.value + (task.fileId to errorStage) + (task.uri.toString() to errorStage)
             _uploadState.value = UploadUiState.Error("Master Vault Key locked")
+            delay(1200L)
+            _activeUploadStages.value = _activeUploadStages.value - task.fileId - task.uri.toString()
+            _inFlightUploads.value = _inFlightUploads.value - task.fileId
             return
         }
 
@@ -255,8 +292,10 @@ class GalleryViewModel @Inject constructor(
             contentResolver = task.contentResolver,
             uri = task.uri,
             masterVaultKey = masterKey,
+            mediaType = task.mimeType,
             originalFileName = task.fileName,
             customFileId = task.fileId,
+            customCapturedAt = task.dateModified,
             onProgress = { stage ->
                 _activeUploadStages.value = _activeUploadStages.value + (task.fileId to stage) + (task.uri.toString() to stage)
                 _batchUploadState.value = _batchUploadState.value.copy(
@@ -327,16 +366,49 @@ class GalleryViewModel @Inject constructor(
         _showPermissionRationale.value = false
 
         viewModelScope.launch(ioDispatcher) {
-            val urisToSync = mutableListOf<Uri>()
+            val allDiscoveredItems = mutableListOf<DiscoveredMediaItem>()
             for (bucketId in selectedBucketIds) {
                 val items = mediaFolderScanner.queryMediaInFolder(bucketId)
-                urisToSync.addAll(items.map { it.uri })
+                allDiscoveredItems.addAll(items)
             }
-            if (urisToSync.isNotEmpty()) {
-                withContext(Dispatchers.Main) {
-                    enqueueUploads(contentResolver, urisToSync)
-                }
+            if (allDiscoveredItems.isEmpty()) return@launch
+
+            val inFlightUris = _inFlightUploads.value.values.map { it.uri }.toSet()
+            val uniqueItems = allDiscoveredItems.distinctBy { it.uri }.filter { it.uri !in inFlightUris }
+            if (uniqueItems.isEmpty()) return@launch
+
+            val newTasks = mutableListOf<InFlightUploadItem>()
+            val newTasksMap = mutableMapOf<String, InFlightUploadItem>()
+
+            for (item in uniqueItems) {
+                val fileId = UUID.randomUUID().toString()
+                val task = InFlightUploadItem(
+                    fileId = fileId,
+                    uri = item.uri,
+                    fileName = item.displayName,
+                    contentResolver = contentResolver,
+                    dateModified = item.dateModified,
+                    mimeType = item.mimeType,
+                    fileSize = item.size
+                )
+                newTasks.add(task)
+                newTasksMap[fileId] = task
             }
+
+            totalBatchCount += newTasks.size
+            _batchUploadState.value = _batchUploadState.value.copy(
+                totalItems = totalBatchCount,
+                completedItems = completedBatchCount,
+                isUploading = true
+            )
+
+            _inFlightUploads.value = _inFlightUploads.value + newTasksMap
+
+            for (task in newTasks) {
+                uploadChannel.trySend(task)
+            }
+
+            ensureUploadWorkerRunning()
         }
     }
 
@@ -486,15 +558,22 @@ class GalleryViewModel @Inject constructor(
         thumbnailLoader.clearDiskCache()
     }
 
-    private fun queryName(resolver: ContentResolver, uri: Uri): String? {
+    private fun queryNameAndSize(resolver: ContentResolver, uri: Uri): Pair<String?, Long> {
         try {
             resolver.query(uri, null, null, null)?.use { cursor ->
                 val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (nameIndex != -1 && cursor.moveToFirst()) {
-                    return cursor.getString(nameIndex)
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (cursor.moveToFirst()) {
+                    val name = if (nameIndex != -1) cursor.getString(nameIndex) else null
+                    val size = if (sizeIndex != -1) cursor.getLong(sizeIndex) else 0L
+                    return Pair(name, size)
                 }
             }
         } catch (_: Exception) {}
-        return null
+        return Pair(null, 0L)
+    }
+
+    private fun queryName(resolver: ContentResolver, uri: Uri): String? {
+        return queryNameAndSize(resolver, uri).first
     }
 }

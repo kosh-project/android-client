@@ -39,6 +39,33 @@ class EncryptedThumbnailLoader @Inject constructor(
 
     internal val diskCacheDir = File(context.cacheDir, "kosh_thumbnails").apply { mkdirs() }
 
+    private fun calculateInSampleSize(
+        contentResolver: ContentResolver,
+        uri: Uri,
+        targetSize: Int
+    ): Int {
+        return try {
+            val boundsOptions = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, boundsOptions)
+            }
+            val origWidth = boundsOptions.outWidth
+            val origHeight = boundsOptions.outHeight
+            if (origWidth <= 0 || origHeight <= 0) return 1
+
+            var inSampleSize = 1
+            val maxOriginal = maxOf(origWidth, origHeight)
+            while (maxOriginal / (inSampleSize * 2) >= targetSize) {
+                inSampleSize *= 2
+            }
+            inSampleSize
+        } catch (_: Exception) {
+            1
+        }
+    }
+
     /**
      * Decodes and caches a local preview bitmap for an in-flight upload item.
      */
@@ -47,11 +74,43 @@ class EncryptedThumbnailLoader @Inject constructor(
             memoryCache.get(fileId)?.let { return it }
         }
         return try {
+            val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = 256)
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+            }
             val bitmap = contentResolver.openInputStream(uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream)
+                BitmapFactory.decodeStream(stream, null, options)
             }
             if (bitmap != null && fileId != null) {
                 memoryCache.put(fileId, bitmap)
+            }
+            bitmap
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Decodes and caches a local preview bitmap keyed by URI string with sub-sampling.
+     */
+    fun loadLocalUriPreview(
+        contentResolver: ContentResolver,
+        uri: Uri,
+        targetSize: Int = 180
+    ): Bitmap? {
+        val cacheKey = uri.toString()
+        memoryCache.get(cacheKey)?.let { return it }
+
+        return try {
+            val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize)
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+            }
+            val bitmap = contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, options)
+            }
+            if (bitmap != null) {
+                memoryCache.put(cacheKey, bitmap)
             }
             bitmap
         } catch (_: Exception) {

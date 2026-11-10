@@ -45,6 +45,7 @@ class MediaFolderScanner @Inject constructor(
         )
 
         for (contentUri in urisToQuery) {
+            val cursorCountPerBucket = mutableMapOf<String, Int>()
             try {
                 context.contentResolver.query(
                     contentUri,
@@ -56,11 +57,13 @@ class MediaFolderScanner @Inject constructor(
                     val idCol = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
                     val bucketIdCol = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_ID)
                     val bucketNameCol = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                    val dateCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
 
                     while (cursor.moveToNext()) {
                         val id = if (idCol != -1) cursor.getLong(idCol) else continue
                         val rawBucketId = if (bucketIdCol != -1) cursor.getString(bucketIdCol) else null
                         val rawBucketName = if (bucketNameCol != -1) cursor.getString(bucketNameCol) else null
+                        val date = if (dateCol != -1) cursor.getLong(dateCol) * 1000L else System.currentTimeMillis()
 
                         val bucketId = rawBucketId ?: "unknown"
                         val bucketName = rawBucketName ?: "Media"
@@ -70,9 +73,13 @@ class MediaFolderScanner @Inject constructor(
                         val acc = folderMap.getOrPut(bucketId) {
                             FolderAccumulator(
                                 bucketId = bucketId,
-                                displayName = bucketName,
-                                representativeUri = itemUri
+                                displayName = bucketName
                             )
+                        }
+                        val itemsFromCurrentCursor = cursorCountPerBucket.getOrDefault(bucketId, 0)
+                        if (itemsFromCurrentCursor < 3) {
+                            acc.previewCandidates.add(itemUri to date)
+                            cursorCountPerBucket[bucketId] = itemsFromCurrentCursor + 1
                         }
                         acc.count++
                     }
@@ -84,11 +91,13 @@ class MediaFolderScanner @Inject constructor(
 
         folderMap.values
             .map { acc ->
+                val previews = acc.previewUris
                 MediaFolder(
                     bucketId = acc.bucketId,
                     displayName = acc.displayName,
                     mediaCount = acc.count,
-                    representativeUri = acc.representativeUri,
+                    representativeUri = previews.firstOrNull(),
+                    previewUris = previews,
                     isSelectedForSync = enabledBuckets.contains(acc.bucketId)
                 )
             }
@@ -170,7 +179,10 @@ class MediaFolderScanner @Inject constructor(
     private class FolderAccumulator(
         val bucketId: String,
         val displayName: String,
-        val representativeUri: Uri,
+        val previewCandidates: MutableList<Pair<Uri, Long>> = mutableListOf(),
         var count: Int = 0
-    )
+    ) {
+        val previewUris: List<Uri>
+            get() = previewCandidates.sortedByDescending { it.second }.take(3).map { it.first }
+    }
 }

@@ -415,7 +415,8 @@ fun GalleryScreen(
                             uploadStage = uploadStage,
                             onClick = {
                                 // Fullscreen viewer deferred to next iteration
-                            }
+                            },
+                            modifier = Modifier.animateItem()
                         )
                     }
                 }
@@ -454,7 +455,8 @@ fun GalleryScreen(
             },
             onDismiss = {
                 viewModel.dismissFolderSelection()
-            }
+            },
+            thumbnailLoader = viewModel.thumbnailLoader
         )
     }
 

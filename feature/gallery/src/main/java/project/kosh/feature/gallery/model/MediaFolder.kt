@@ -9,6 +9,7 @@ import android.net.Uri
  * @property displayName Human-readable folder name (e.g. "Camera", "Screenshots", "WhatsApp Images").
  * @property mediaCount Total number of photos and videos indexed inside this bucket.
  * @property representativeUri Thumbnail URI representing the latest media item in the bucket.
+ * @property previewUris Up to 3 latest media URIs used for stacked album card previews.
  * @property isSelectedForSync Whether this bucket is enrolled in automatic private node backup.
  */
 data class MediaFolder(
@@ -16,6 +17,7 @@ data class MediaFolder(
     val displayName: String,
     val mediaCount: Int,
     val representativeUri: Uri?,
+    val previewUris: List<Uri> = emptyList(),
     val isSelectedForSync: Boolean = false
 )
 
