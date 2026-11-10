@@ -297,6 +297,7 @@ class MediaUploadPipeline @Inject constructor(
         mediaType: String? = null,
         originalFileName: String? = null,
         customFileId: String? = null,
+        customCapturedAt: Long? = null,
         onProgress: ((UploadStage) -> Unit)? = null
     ): UploadResult {
         val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
@@ -313,6 +314,7 @@ class MediaUploadPipeline @Inject constructor(
             mediaType = resolvedMediaType,
             masterVaultKey = masterVaultKey,
             originalFileName = originalFileName,
+            customCapturedAt = customCapturedAt,
             customFileId = customFileId,
             onProgress = onProgress
         )
