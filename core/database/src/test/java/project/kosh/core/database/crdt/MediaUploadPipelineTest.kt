@@ -105,7 +105,7 @@ class MediaUploadPipelineTest {
 
         // Server CAS upload must NOT have been called
         coVerify(exactly = 0) {
-            assetClient.uploadBytes(any(), any(), any())
+            assetClient.uploadBytes(any(), any(), any(), any())
         }
     }
 
@@ -115,10 +115,10 @@ class MediaUploadPipelineTest {
         val expectedSha256 = MediaHasher.computeSha256(testBytes)
 
         coEvery {
-            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_META), any())
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_META), any(), any())
         } returns NetworkResult.Success("blake3-cas-thumb-hash-888")
         coEvery {
-            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_ITEM), any())
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_ITEM), any(), any())
         } returns NetworkResult.Success("blake3-cas-ciphertext-hash-999")
 
         val result = pipeline.uploadFromBytes(
@@ -177,5 +177,37 @@ class MediaUploadPipelineTest {
         )
         assertTrue(result is UploadResult.Error)
         assertEquals("Cannot upload empty media bytes", (result as UploadResult.Error).message)
+    }
+
+    @Test
+    fun uploadFromBytes_emitsLifecycleProgressStages() = runBlocking {
+        val testBytes = "Progress Test Image".toByteArray()
+        coEvery {
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_META), any(), any())
+        } returns NetworkResult.Success("thumb-hash-prog")
+        coEvery {
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_ITEM), any(), any())
+        } answers {
+            val prog = arg<((Long, Long) -> Unit)?>(3)
+            prog?.invoke(50L, 100L)
+            prog?.invoke(100L, 100L)
+            NetworkResult.Success("item-hash-prog")
+        }
+
+        val stages = mutableListOf<project.kosh.core.model.UploadStage>()
+        val result = pipeline.uploadFromBytes(
+            bytes = testBytes,
+            mediaType = "image/jpeg",
+            masterVaultKey = masterVaultKey,
+            onProgress = { stages.add(it) }
+        )
+
+        assertTrue(result is UploadResult.Success)
+        assertTrue(stages.any { it is project.kosh.core.model.UploadStage.Hashing })
+        assertTrue(stages.any { it is project.kosh.core.model.UploadStage.GeneratingThumbnail })
+        assertTrue(stages.any { it is project.kosh.core.model.UploadStage.Encrypting })
+        assertTrue(stages.any { it is project.kosh.core.model.UploadStage.Uploading })
+        assertTrue(stages.any { it is project.kosh.core.model.UploadStage.Finalizing })
+        assertTrue(stages.any { it is project.kosh.core.model.UploadStage.Completed })
     }
 }
