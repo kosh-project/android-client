@@ -10,6 +10,7 @@ import androidx.room.Index
  *
  * Implements Google Photos-style custom album order via [positionIndex], allowing drag-and-drop
  * sequence preservation within individual albums.
+ * Replicated via Delta-CRDT with [lamportClock], [deviceId], and [isDeleted] tombstones.
  */
 @Entity(
     tableName = "album_media_cross_ref",
@@ -31,7 +32,8 @@ import androidx.room.Index
     indices = [
         Index(value = ["album_id"]),
         Index(value = ["file_id"]),
-        Index(value = ["album_id", "position_index"])
+        Index(value = ["album_id", "position_index"]),
+        Index(value = ["is_deleted"])
     ]
 )
 data class AlbumMediaCrossRef(
@@ -45,5 +47,14 @@ data class AlbumMediaCrossRef(
     val addedAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "position_index")
-    val positionIndex: Int = 0
+    val positionIndex: Int = 0,
+
+    @ColumnInfo(name = "lamport_clock", defaultValue = "0")
+    val lamportClock: Long = 0L,
+
+    @ColumnInfo(name = "device_id", defaultValue = "''")
+    val deviceId: String = "",
+
+    @ColumnInfo(name = "is_deleted", defaultValue = "0")
+    val isDeleted: Boolean = false
 )

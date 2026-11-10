@@ -28,6 +28,9 @@ android {
 
 dependencies {
     implementation(project(":core:model"))
+    implementation(project(":core:crypto"))
+    implementation(project(":core:network"))
+    implementation(libs.kotlinx.serialization.protobuf)
 
     // Room Database
     implementation(libs.androidx.room.runtime)
@@ -40,6 +43,7 @@ dependencies {
     ksp(libs.kotlin.metadata.jvm)
 
     testImplementation(libs.junit)
+    testImplementation(libs.io.mockk)
     testImplementation(libs.org.jetbrains.kotlinx.coroutines.test)
     testImplementation(libs.androidx.test.core.ktx)
     testImplementation("org.robolectric:robolectric:4.14.1")

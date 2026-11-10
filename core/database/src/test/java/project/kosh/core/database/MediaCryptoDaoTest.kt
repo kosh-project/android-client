@@ -61,7 +61,7 @@ class MediaCryptoDaoTest {
 
         val crypto = MediaCryptoMappingEntity(
             fileId = "f1",
-            plaintextHash = "blake3-plain-hash-001",
+            plaintextSha256 = "blake3-plain-hash-001",
             ciphertextHash = null,
             thumbnailCiphertextHash = null,
             wrappedDek = wrappedDek120Hex,
@@ -85,7 +85,7 @@ class MediaCryptoDaoTest {
         insertParentAsset("f1")
         val crypto = MediaCryptoMappingEntity(
             fileId = "f1",
-            plaintextHash = "unique-plaintext-hash",
+            plaintextSha256 = "unique-plaintext-hash",
             wrappedDek = "0".repeat(120),
             uploadStatus = UploadStatus.PENDING
         )
@@ -104,7 +104,7 @@ class MediaCryptoDaoTest {
         insertParentAsset("f1")
         val crypto = MediaCryptoMappingEntity(
             fileId = "f1",
-            plaintextHash = "plain-1",
+            plaintextSha256 = "plain-1",
             ciphertextHash = "cas-blake3-hash-commit-1",
             wrappedDek = "0".repeat(120),
             uploadStatus = UploadStatus.SYNCED
@@ -168,7 +168,7 @@ class MediaCryptoDaoTest {
         cryptoDao.insert(
             MediaCryptoMappingEntity(
                 fileId = "f1",
-                plaintextHash = "p1",
+                plaintextSha256 = "p1",
                 ciphertextHash = "c1",
                 wrappedDek = "0".repeat(120),
                 uploadStatus = UploadStatus.SYNCED,

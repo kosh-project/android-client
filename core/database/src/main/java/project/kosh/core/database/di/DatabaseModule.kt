@@ -12,6 +12,8 @@ import project.kosh.core.database.KoshDatabase
 import project.kosh.core.database.dao.AlbumDao
 import project.kosh.core.database.dao.MediaAssetDao
 import project.kosh.core.database.dao.MediaCryptoDao
+import project.kosh.core.database.dao.SyncQueueDao
+import project.kosh.core.database.dao.SyncWatermarkDao
 import project.kosh.core.database.repository.AlbumRepository
 import project.kosh.core.database.repository.DefaultAlbumRepository
 import project.kosh.core.database.repository.DefaultMediaRepository
@@ -48,6 +50,7 @@ object DatabaseModule {
         KoshDatabase::class.java,
         KoshDatabase.DATABASE_NAME
     )
+        .addMigrations(KoshDatabase.MIGRATION_1_2)
         .fallbackToDestructiveMigration(dropAllTables = true)
         .build()
 
@@ -59,4 +62,10 @@ object DatabaseModule {
 
     @Provides
     fun provideAlbumDao(database: KoshDatabase): AlbumDao = database.albumDao()
+
+    @Provides
+    fun provideSyncQueueDao(database: KoshDatabase): SyncQueueDao = database.syncQueueDao()
+
+    @Provides
+    fun provideSyncWatermarkDao(database: KoshDatabase): SyncWatermarkDao = database.syncWatermarkDao()
 }

@@ -13,6 +13,7 @@ import project.kosh.core.model.MediaAsset
  *
  * Indexed along temporal dimensions ([capturedAt], [createdAt]) to allow zero-lag
  * reverse-chronological timeline rendering (Google Photos-style grid) and MIME type filtering.
+ * Replicated via Delta-CRDT with [lamportClock], [deviceId], and [isDeleted] tombstones.
  */
 @Entity(
     tableName = "media_assets",
@@ -20,7 +21,8 @@ import project.kosh.core.model.MediaAsset
         Index(value = ["captured_at"]),
         Index(value = ["captured_at", "file_id"]),
         Index(value = ["created_at"]),
-        Index(value = ["media_type"])
+        Index(value = ["media_type"]),
+        Index(value = ["is_deleted"])
     ]
 )
 data class MediaAssetEntity(
@@ -86,7 +88,16 @@ data class MediaAssetEntity(
     val updatedAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "asset_tag")
-    val assetTag: AssetTag = AssetTag.GALLERY_ITEM
+    val assetTag: AssetTag = AssetTag.GALLERY_ITEM,
+
+    @ColumnInfo(name = "lamport_clock", defaultValue = "0")
+    val lamportClock: Long = 0L,
+
+    @ColumnInfo(name = "device_id", defaultValue = "''")
+    val deviceId: String = "",
+
+    @ColumnInfo(name = "is_deleted", defaultValue = "0")
+    val isDeleted: Boolean = false
 ) {
     /**
      * Converts this database entity into the clean domain [MediaAsset] model.
@@ -114,7 +125,10 @@ data class MediaAssetEntity(
         capturedAt = capturedAt,
         createdAt = createdAt,
         updatedAt = updatedAt,
-        assetTag = assetTag
+        assetTag = assetTag,
+        lamportClock = lamportClock,
+        deviceId = deviceId,
+        isDeleted = isDeleted
     )
 
     companion object {
@@ -142,7 +156,10 @@ data class MediaAssetEntity(
             capturedAt = domain.capturedAt,
             createdAt = domain.createdAt,
             updatedAt = domain.updatedAt,
-            assetTag = domain.assetTag
+            assetTag = domain.assetTag,
+            lamportClock = domain.lamportClock,
+            deviceId = domain.deviceId,
+            isDeleted = domain.isDeleted
         )
     }
 }

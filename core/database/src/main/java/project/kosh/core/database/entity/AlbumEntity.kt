@@ -12,6 +12,7 @@ import project.kosh.core.model.Album
  *
  * Maintains an optional reference to a cover image ([coverFileId]) with `SET_NULL` cascade
  * behaviour: if the cover photo is deleted from the vault, the album persists with null cover.
+ * Replicated via Delta-CRDT with [lamportClock], [deviceId], and [isDeleted] tombstones.
  */
 @Entity(
     tableName = "albums",
@@ -26,7 +27,8 @@ import project.kosh.core.model.Album
     indices = [
         Index(value = ["cover_file_id"]),
         Index(value = ["created_at"]),
-        Index(value = ["updated_at"])
+        Index(value = ["updated_at"]),
+        Index(value = ["is_deleted"])
     ]
 )
 data class AlbumEntity(
@@ -47,7 +49,16 @@ data class AlbumEntity(
     val createdAt: Long = System.currentTimeMillis(),
 
     @ColumnInfo(name = "updated_at")
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+
+    @ColumnInfo(name = "lamport_clock", defaultValue = "0")
+    val lamportClock: Long = 0L,
+
+    @ColumnInfo(name = "device_id", defaultValue = "''")
+    val deviceId: String = "",
+
+    @ColumnInfo(name = "is_deleted", defaultValue = "0")
+    val isDeleted: Boolean = false
 ) {
     /**
      * Converts this database entity into the clean domain [Album] model.
@@ -58,7 +69,10 @@ data class AlbumEntity(
         description = description,
         coverFileId = coverFileId,
         createdAt = createdAt,
-        updatedAt = updatedAt
+        updatedAt = updatedAt,
+        lamportClock = lamportClock,
+        deviceId = deviceId,
+        isDeleted = isDeleted
     )
 
     companion object {
@@ -71,7 +85,10 @@ data class AlbumEntity(
             description = domain.description,
             coverFileId = domain.coverFileId,
             createdAt = domain.createdAt,
-            updatedAt = domain.updatedAt
+            updatedAt = domain.updatedAt,
+            lamportClock = domain.lamportClock,
+            deviceId = domain.deviceId,
+            isDeleted = domain.isDeleted
         )
     }
 }

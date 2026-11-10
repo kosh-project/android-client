@@ -20,7 +20,7 @@ import project.kosh.core.database.model.AlbumWithMediaAndCover
  * Data Access Object for Google Photos-style collections ([AlbumEntity] and [AlbumMediaCrossRef]).
  *
  * Supports album creation, cover image resolution, cross-reference associations,
- * and custom album sequence reordering.
+ * custom album sequence reordering, and Delta-CRDT tombstoning.
  */
 @Dao
 interface AlbumDao {
@@ -43,50 +43,71 @@ interface AlbumDao {
     @Query("DELETE FROM albums WHERE album_id = :albumId")
     suspend fun deleteById(albumId: String): Int
 
-    @Query("SELECT * FROM albums WHERE album_id = :albumId")
+    @Query("UPDATE albums SET is_deleted = 1, lamport_clock = :lamportClock, device_id = :deviceId, updated_at = :updatedAt WHERE album_id = :albumId")
+    suspend fun markDeleted(
+        albumId: String,
+        lamportClock: Long,
+        deviceId: String,
+        updatedAt: Long = System.currentTimeMillis()
+    ): Int
+
+    @Query("SELECT * FROM albums WHERE album_id = :albumId AND is_deleted = 0")
     suspend fun getAlbumById(albumId: String): AlbumEntity?
 
     @Query("SELECT * FROM albums WHERE album_id = :albumId")
+    suspend fun getAnyAlbumById(albumId: String): AlbumEntity?
+
+    @Query("SELECT * FROM albums WHERE album_id = :albumId AND is_deleted = 0")
     fun observeAlbumById(albumId: String): Flow<AlbumEntity?>
 
-    @Query("SELECT * FROM albums ORDER BY updated_at DESC")
+    @Query("SELECT * FROM albums WHERE is_deleted = 0 ORDER BY updated_at DESC")
     suspend fun getAllAlbums(): List<AlbumEntity>
 
-    @Query("SELECT * FROM albums ORDER BY updated_at DESC")
+    @Query("SELECT * FROM albums WHERE is_deleted = 0 ORDER BY updated_at DESC")
     fun observeAllAlbums(): Flow<List<AlbumEntity>>
 
     @Transaction
-    @Query("SELECT * FROM albums ORDER BY updated_at DESC")
+    @Query("SELECT * FROM albums WHERE is_deleted = 0 ORDER BY updated_at DESC")
     fun observeAlbumsWithCover(): Flow<List<AlbumWithCover>>
 
     @Transaction
-    @Query("SELECT * FROM albums WHERE album_id = :albumId")
+    @Query("SELECT * FROM albums WHERE album_id = :albumId AND is_deleted = 0")
     suspend fun getAlbumWithMedia(albumId: String): AlbumWithMedia?
 
     @Transaction
-    @Query("SELECT * FROM albums WHERE album_id = :albumId")
+    @Query("SELECT * FROM albums WHERE album_id = :albumId AND is_deleted = 0")
     fun observeAlbumWithMedia(albumId: String): Flow<AlbumWithMedia?>
 
     @Transaction
-    @Query("SELECT * FROM albums WHERE album_id = :albumId")
+    @Query("SELECT * FROM albums WHERE album_id = :albumId AND is_deleted = 0")
     suspend fun getAlbumWithMediaAndCover(albumId: String): AlbumWithMediaAndCover?
 
     @Transaction
-    @Query("SELECT * FROM albums WHERE album_id = :albumId")
+    @Query("SELECT * FROM albums WHERE album_id = :albumId AND is_deleted = 0")
     fun observeAlbumWithMediaAndCover(albumId: String): Flow<AlbumWithMediaAndCover?>
 
     @Transaction
-    @Query("SELECT * FROM albums WHERE album_id = :albumId")
+    @Query("SELECT * FROM albums WHERE album_id = :albumId AND is_deleted = 0")
     suspend fun getAlbumWithCover(albumId: String): AlbumWithCover?
 
     @Transaction
-    @Query("SELECT * FROM albums WHERE album_id = :albumId")
+    @Query("SELECT * FROM albums WHERE album_id = :albumId AND is_deleted = 0")
     fun observeAlbumWithCover(albumId: String): Flow<AlbumWithCover?>
 
     @Query("UPDATE albums SET cover_file_id = :coverFileId, updated_at = :updatedAt WHERE album_id = :albumId")
     suspend fun updateAlbumCover(
         albumId: String,
         coverFileId: String?,
+        updatedAt: Long = System.currentTimeMillis()
+    ): Int
+
+    @Query("UPDATE albums SET title = :title, description = :description, updated_at = :updatedAt, lamport_clock = :lamportClock, device_id = :deviceId WHERE album_id = :albumId")
+    suspend fun updateAlbumDetailsWithClock(
+        albumId: String,
+        title: String,
+        description: String?,
+        lamportClock: Long,
+        deviceId: String,
         updatedAt: Long = System.currentTimeMillis()
     ): Int
 
@@ -115,6 +136,12 @@ interface AlbumDao {
     @Query("DELETE FROM album_media_cross_ref WHERE album_id = :albumId")
     suspend fun clearCrossRefsInternal(albumId: String): Int
 
+    @Query("UPDATE album_media_cross_ref SET is_deleted = 1, lamport_clock = :lamportClock, device_id = :deviceId WHERE album_id = :albumId AND file_id = :fileId")
+    suspend fun markCrossRefDeleted(albumId: String, fileId: String, lamportClock: Long, deviceId: String): Int
+
+    @Query("SELECT * FROM album_media_cross_ref WHERE album_id = :albumId AND file_id = :fileId")
+    suspend fun getAnyCrossRef(albumId: String, fileId: String): AlbumMediaCrossRef?
+
     @Transaction
     suspend fun removeMediaFromAlbum(albumId: String, fileId: String): Int =
         removeMediaListFromAlbum(albumId, listOf(fileId))
@@ -139,16 +166,16 @@ interface AlbumDao {
         return removed
     }
 
-    @Query("SELECT * FROM album_media_cross_ref WHERE album_id = :albumId ORDER BY position_index ASC, added_at ASC")
+    @Query("SELECT * FROM album_media_cross_ref WHERE album_id = :albumId AND is_deleted = 0 ORDER BY position_index ASC, added_at ASC")
     suspend fun getCrossRefsForAlbum(albumId: String): List<AlbumMediaCrossRef>
 
-    @Query("SELECT * FROM album_media_cross_ref WHERE album_id = :albumId ORDER BY position_index ASC, added_at ASC")
+    @Query("SELECT * FROM album_media_cross_ref WHERE album_id = :albumId AND is_deleted = 0 ORDER BY position_index ASC, added_at ASC")
     fun observeCrossRefsForAlbum(albumId: String): Flow<List<AlbumMediaCrossRef>>
 
     @Query("""
         SELECT m.* FROM media_assets m
         INNER JOIN album_media_cross_ref r ON m.file_id = r.file_id
-        WHERE r.album_id = :albumId
+        WHERE r.album_id = :albumId AND r.is_deleted = 0 AND m.is_deleted = 0
         ORDER BY r.position_index ASC, r.added_at ASC
     """)
     fun observeMediaForAlbumOrdered(albumId: String): Flow<List<MediaAssetEntity>>
@@ -156,15 +183,15 @@ interface AlbumDao {
     @Query("""
         SELECT m.* FROM media_assets m
         INNER JOIN album_media_cross_ref r ON m.file_id = r.file_id
-        WHERE r.album_id = :albumId
+        WHERE r.album_id = :albumId AND r.is_deleted = 0 AND m.is_deleted = 0
         ORDER BY r.position_index ASC, r.added_at ASC
     """)
     suspend fun getMediaForAlbumOrdered(albumId: String): List<MediaAssetEntity>
 
-    @Query("SELECT COUNT(*) FROM album_media_cross_ref WHERE album_id = :albumId")
+    @Query("SELECT COUNT(*) FROM album_media_cross_ref r INNER JOIN media_assets m ON r.file_id = m.file_id WHERE r.album_id = :albumId AND r.is_deleted = 0 AND m.is_deleted = 0")
     suspend fun getMediaCountInAlbum(albumId: String): Int
 
-    @Query("SELECT COUNT(*) FROM album_media_cross_ref WHERE album_id = :albumId")
+    @Query("SELECT COUNT(*) FROM album_media_cross_ref r INNER JOIN media_assets m ON r.file_id = m.file_id WHERE r.album_id = :albumId AND r.is_deleted = 0 AND m.is_deleted = 0")
     fun observeMediaCountInAlbum(albumId: String): Flow<Int>
 
     @Query("UPDATE album_media_cross_ref SET position_index = :newPosition WHERE album_id = :albumId AND file_id = :fileId")
@@ -175,7 +202,6 @@ interface AlbumDao {
         fileIdsInOrder.forEachIndexed { index, fileId ->
             updatePosition(albumId = albumId, fileId = fileId, newPosition = index)
         }
-        // Ensure any items in album not specified in fileIdsInOrder are shifted after
         val remaining = getCrossRefsForAlbum(albumId).filterNot { it.fileId in fileIdsInOrder }
         remaining.forEachIndexed { index, ref ->
             updatePosition(albumId = albumId, fileId = ref.fileId, newPosition = fileIdsInOrder.size + index)

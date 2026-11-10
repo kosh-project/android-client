@@ -160,7 +160,7 @@ class MediaAssetDaoTest {
 
         val crypto = MediaCryptoMappingEntity(
             fileId = "f1",
-            plaintextHash = "plain-hash-001",
+            plaintextSha256 = "plain-hash-001",
             ciphertextHash = "cipher-hash-001",
             wrappedDek = "a".repeat(120),
             uploadStatus = UploadStatus.SYNCED
@@ -188,7 +188,7 @@ class MediaAssetDaoTest {
 
         val crypto = MediaCryptoMappingEntity(
             fileId = "f1",
-            plaintextHash = "plain-hash-001",
+            plaintextSha256 = "plain-hash-001",
             ciphertextHash = "cipher-hash-001",
             wrappedDek = "f".repeat(120),
             uploadStatus = UploadStatus.SYNCED
