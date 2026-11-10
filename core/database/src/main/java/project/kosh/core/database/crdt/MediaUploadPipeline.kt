@@ -2,9 +2,13 @@ package project.kosh.core.database.crdt
 
 import android.content.ContentResolver
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
+import android.util.Size
 import androidx.room.withTransaction
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -90,6 +94,7 @@ class MediaUploadPipeline @Inject constructor(
         customCapturedAt: Long? = null,
         customExif: ExifMetadata? = null,
         customFileId: String? = null,
+        customThumbnailBytes: ByteArray? = null,
         onProgress: ((UploadStage) -> Unit)? = null
     ): UploadResult {
         if (bytes.isEmpty()) {
@@ -122,9 +127,15 @@ class MediaUploadPipeline @Inject constructor(
         // Step 4: Thumbnail Generation
         onProgress?.invoke(UploadStage.GeneratingThumbnail)
         val thumbnailBytes = try {
-            if (mediaType.startsWith("image/", ignoreCase = true)) {
+            if (customThumbnailBytes != null) {
+                customThumbnailBytes
+            } else if (mediaType.startsWith("image/", ignoreCase = true)) {
                 ThumbnailGenerator.generateThumbnail(bytes)
-            } else null
+            } else if (mediaType.startsWith("video/", ignoreCase = true)) {
+                extractVideoThumbnailFromBytes(bytes)
+            } else {
+                null
+            }
         } catch (_: Exception) {
             null
         }
@@ -309,6 +320,31 @@ class MediaUploadPipeline @Inject constructor(
 
         val resolvedMediaType = mediaType ?: contentResolver.getType(uri) ?: "image/jpeg"
 
+        val customThumbnailBytes = if (resolvedMediaType.startsWith("video/", ignoreCase = true)) {
+            val videoBitmap: Bitmap? = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try {
+                        contentResolver.loadThumbnail(uri, Size(512, 512), null)
+                    } catch (_: Exception) {
+                        extractVideoFrameFromUri(contentResolver, uri)
+                    }
+                } else {
+                    extractVideoFrameFromUri(contentResolver, uri)
+                }
+            } catch (_: Exception) {
+                null
+            }
+            videoBitmap?.let { bitmap ->
+                try {
+                    ThumbnailGenerator.compressBitmap(bitmap)
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+        } else {
+            null
+        }
+
         return uploadFromBytes(
             bytes = bytes,
             mediaType = resolvedMediaType,
@@ -316,8 +352,69 @@ class MediaUploadPipeline @Inject constructor(
             originalFileName = originalFileName,
             customCapturedAt = customCapturedAt,
             customFileId = customFileId,
+            customThumbnailBytes = customThumbnailBytes,
             onProgress = onProgress
         )
+    }
+
+    private fun extractVideoFrameFromUri(contentResolver: ContentResolver, uri: Uri): Bitmap? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            val pfd = try {
+                contentResolver.openFileDescriptor(uri, "r")
+            } catch (_: Exception) {
+                null
+            }
+            if (pfd != null) {
+                pfd.use {
+                    retriever.setDataSource(it.fileDescriptor)
+                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        ?: retriever.frameAtTime
+                }
+            } else if (uri.path != null && File(uri.path!!).exists()) {
+                retriever.setDataSource(uri.path)
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.frameAtTime
+            } else if (context != null) {
+                retriever.setDataSource(context, uri)
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.frameAtTime
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun extractVideoThumbnailFromBytes(bytes: ByteArray): ByteArray? {
+        var tempFile: File? = null
+        val retriever = MediaMetadataRetriever()
+        return try {
+            tempFile = File.createTempFile("kosh_vid_thumb_", ".tmp", context?.cacheDir)
+            tempFile.writeBytes(bytes)
+            retriever.setDataSource(tempFile.absolutePath)
+            val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.frameAtTime
+            bitmap?.let { b ->
+                try {
+                    ThumbnailGenerator.compressBitmap(b)
+                } finally {
+                    b.recycle()
+                }
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {}
+            tempFile?.delete()
+        }
     }
 
     private data class ParsedMetadata(

@@ -210,4 +210,90 @@ class MediaUploadPipelineTest {
         assertTrue(stages.any { it is project.kosh.core.model.UploadStage.Finalizing })
         assertTrue(stages.any { it is project.kosh.core.model.UploadStage.Completed })
     }
+
+    @Test
+    fun uploadFromBytes_withVideoAndCustomThumbnailBytes_encryptsAndUploadsThumbnail() = runBlocking {
+        val testVideoBytes = "Fake MP4 video binary content".toByteArray()
+        val testThumbBytes = "Fake JPEG video frame thumbnail".toByteArray()
+
+        coEvery {
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_META), any(), any())
+        } returns NetworkResult.Success("cas-video-thumb-hash-111")
+        coEvery {
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_ITEM), any(), any())
+        } returns NetworkResult.Success("cas-video-ciphertext-hash-222")
+
+        val result = pipeline.uploadFromBytes(
+            bytes = testVideoBytes,
+            mediaType = "video/mp4",
+            masterVaultKey = masterVaultKey,
+            originalFileName = "sample_clip.mp4",
+            customThumbnailBytes = testThumbBytes
+        )
+
+        assertTrue(result is UploadResult.Success)
+        val fileId = (result as UploadResult.Success).asset.fileId
+
+        val persistedCrypto = db.mediaCryptoDao().getByFileId(fileId)
+        assertNotNull(persistedCrypto)
+        assertEquals("cas-video-thumb-hash-111", persistedCrypto?.thumbnailCiphertextHash)
+        assertEquals("${fileId}_thumb", persistedCrypto?.thumbnailFileId)
+
+        coVerify(exactly = 1) {
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_META), eq("${fileId}_thumb.bin"), any())
+        }
+        coVerify(exactly = 1) {
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_ITEM), eq("sample_clip.mp4"), any())
+        }
+    }
+
+    @Test
+    fun uploadFromBytes_videoWithNullCustomThumbnail_handlesFallbackGracefully() = runBlocking {
+        val testVideoBytes = "MP4 content without pre-generated thumbnail".toByteArray()
+        coEvery {
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_ITEM), any(), any())
+        } returns NetworkResult.Success("cas-vid-item-hash")
+
+        val result = pipeline.uploadFromBytes(
+            bytes = testVideoBytes,
+            mediaType = "video/mp4",
+            masterVaultKey = masterVaultKey,
+            customThumbnailBytes = null
+        )
+
+        assertTrue(result is UploadResult.Success)
+        val fileId = (result as UploadResult.Success).asset.fileId
+        val persistedAsset = db.mediaAssetDao().getAssetById(fileId)
+        assertNotNull(persistedAsset)
+        assertEquals("video/mp4", persistedAsset?.mediaType)
+    }
+
+    @Test
+    fun uploadFromUri_video_readsBytesAndUploadsSuccessfully(): Unit = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val tempFile = java.io.File.createTempFile("test_vid_upload_", ".mp4", context.cacheDir)
+        tempFile.writeBytes("Video payload for uploadFromUri test".toByteArray())
+        val uri = android.net.Uri.fromFile(tempFile)
+
+        coEvery {
+            assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_ITEM), any(), any())
+        } returns NetworkResult.Success("cas-uri-vid-hash")
+
+        val result = pipeline.uploadFromUri(
+            contentResolver = context.contentResolver,
+            uri = uri,
+            masterVaultKey = masterVaultKey,
+            mediaType = "video/mp4",
+            originalFileName = "test_vid.mp4"
+        )
+
+        assertTrue(result is UploadResult.Success)
+        val fileId = (result as UploadResult.Success).asset.fileId
+        val persistedCrypto = db.mediaCryptoDao().getByFileId(fileId)
+        assertNotNull(persistedCrypto)
+        assertEquals("cas-uri-vid-hash", persistedCrypto?.ciphertextHash)
+
+        tempFile.delete()
+    }
 }
+
