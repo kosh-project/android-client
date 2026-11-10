@@ -17,6 +17,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,6 +75,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -79,6 +83,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -170,6 +175,7 @@ fun GalleryScreen(
         label = "galleryExpiredOverlayAlpha"
     )
 
+    var columnCount by remember { mutableIntStateOf(3) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showLinkDeviceBottomSheet by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
@@ -394,11 +400,40 @@ fun GalleryScreen(
             } else {
                 // Interactive Media Grid
                 LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 108.dp),
+                    columns = GridCells.Fixed(columnCount),
                     contentPadding = PaddingValues(2.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                awaitFirstDown(requireUnconsumed = false)
+                                var accumulatedZoom = 1f
+                                do {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.size > 1) {
+                                        val zoom = event.calculateZoom()
+                                        accumulatedZoom *= zoom
+                                        if (accumulatedZoom > 1.25f) {
+                                            if (columnCount > 1) {
+                                                columnCount--
+                                            }
+                                            accumulatedZoom = 1f
+                                            event.changes.forEach { it.consume() }
+                                        } else if (accumulatedZoom < 0.80f) {
+                                            if (columnCount < 5) {
+                                                columnCount++
+                                            }
+                                            accumulatedZoom = 1f
+                                            event.changes.forEach { it.consume() }
+                                        }
+                                    } else {
+                                        accumulatedZoom = 1f
+                                    }
+                                } while (event.changes.any { it.pressed })
+                            }
+                        }
                 ) {
                     items(galleryItems, key = { it.asset.fileId }) { item ->
                         var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf<Bitmap?>(null) }

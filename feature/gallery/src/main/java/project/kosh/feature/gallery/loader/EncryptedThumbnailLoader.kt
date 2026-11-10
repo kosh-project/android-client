@@ -4,8 +4,11 @@ import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.util.LruCache
+import android.util.Size
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -69,25 +72,36 @@ class EncryptedThumbnailLoader @Inject constructor(
     /**
      * Decodes and caches a local preview bitmap for an in-flight upload item.
      */
-    fun loadLocalThumbnail(contentResolver: ContentResolver, uri: Uri, fileId: String? = null): Bitmap? {
-        if (fileId != null) {
-            memoryCache.get(fileId)?.let { return it }
+    fun loadLocalThumbnail(
+        contentResolver: ContentResolver,
+        uri: Uri,
+        fileId: String? = null,
+        mimeType: String? = null
+    ): Bitmap? {
+        val cacheKey = fileId ?: uri.toString()
+        memoryCache.get(cacheKey)?.let { return it }
+
+        val isVideo = (mimeType ?: contentResolver.getType(uri))?.startsWith("video/", ignoreCase = true) == true
+        val bitmap = if (isVideo) {
+            extractVideoThumbnail(contentResolver, uri, targetSize = 256)
+        } else {
+            try {
+                val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = 256)
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                }
+                contentResolver.openInputStream(uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream, null, options)
+                }
+            } catch (_: Exception) {
+                null
+            }
         }
-        return try {
-            val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = 256)
-            val options = BitmapFactory.Options().apply {
-                inSampleSize = sampleSize
-            }
-            val bitmap = contentResolver.openInputStream(uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream, null, options)
-            }
-            if (bitmap != null && fileId != null) {
-                memoryCache.put(fileId, bitmap)
-            }
-            bitmap
-        } catch (_: Exception) {
-            null
+
+        if (bitmap != null) {
+            memoryCache.put(cacheKey, bitmap)
         }
+        return bitmap
     }
 
     /**
@@ -96,25 +110,76 @@ class EncryptedThumbnailLoader @Inject constructor(
     fun loadLocalUriPreview(
         contentResolver: ContentResolver,
         uri: Uri,
-        targetSize: Int = 180
+        targetSize: Int = 180,
+        mimeType: String? = null
     ): Bitmap? {
         val cacheKey = uri.toString()
         memoryCache.get(cacheKey)?.let { return it }
 
+        val isVideo = (mimeType ?: contentResolver.getType(uri))?.startsWith("video/", ignoreCase = true) == true
+        val bitmap = if (isVideo) {
+            extractVideoThumbnail(contentResolver, uri, targetSize)
+        } else {
+            try {
+                val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize)
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                }
+                contentResolver.openInputStream(uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream, null, options)
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        if (bitmap != null) {
+            memoryCache.put(cacheKey, bitmap)
+        }
+        return bitmap
+    }
+
+    private fun extractVideoThumbnail(
+        contentResolver: ContentResolver,
+        uri: Uri,
+        targetSize: Int
+    ): Bitmap? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                return contentResolver.loadThumbnail(uri, Size(targetSize, targetSize), null)
+            } catch (_: Exception) {
+                // Fallback to MediaMetadataRetriever
+            }
+        }
+
+        val retriever = MediaMetadataRetriever()
         return try {
-            val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize)
-            val options = BitmapFactory.Options().apply {
-                inSampleSize = sampleSize
+            val pfd = try {
+                contentResolver.openFileDescriptor(uri, "r")
+            } catch (_: Exception) {
+                null
             }
-            val bitmap = contentResolver.openInputStream(uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream, null, options)
+            if (pfd != null) {
+                pfd.use {
+                    retriever.setDataSource(it.fileDescriptor)
+                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        ?: retriever.frameAtTime
+                }
+            } else if (uri.path != null && File(uri.path!!).exists()) {
+                retriever.setDataSource(uri.path)
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.frameAtTime
+            } else {
+                retriever.setDataSource(context, uri)
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.frameAtTime
             }
-            if (bitmap != null) {
-                memoryCache.put(cacheKey, bitmap)
-            }
-            bitmap
         } catch (_: Exception) {
             null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {}
         }
     }
 

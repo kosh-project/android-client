@@ -66,7 +66,12 @@ fun GalleryItemTile(
     LaunchedEffect(uploadStage) {
         if (uploadStage is UploadStage.Completed) {
             showCompletedFlash = true
-            delay(600L)
+            try {
+                delay(GalleryItemTileVisuals.COMPLETED_FLASH_DURATION_MS)
+            } finally {
+                showCompletedFlash = false
+            }
+        } else {
             showCompletedFlash = false
         }
     }
@@ -115,26 +120,35 @@ fun GalleryItemTile(
                     .fillMaxWidth()
                     .fillMaxHeight(animatedHashHeight)
                     .align(Alignment.TopCenter)
-                    .background(Color.Black.copy(alpha = 0.38f))
+                    .background(Color.Black.copy(alpha = GalleryItemTileVisuals.VEIL_ALPHA))
             )
         }
 
         // Phase 2: Upload Veil (38% opacity, rises FROM BOTTOM to 100%)
-        val isUploading = (uploadStage is UploadStage.Uploading || uploadStage is UploadStage.Finalizing) && !showCompletedFlash
-        val uploadProgress = (uploadStage as? UploadStage.Uploading)?.progress ?: if (uploadStage is UploadStage.Finalizing) 1f else 0f
+        val isCompleted = uploadStage is UploadStage.Completed || showCompletedFlash
+        val isUploading = uploadStage is UploadStage.Uploading || uploadStage is UploadStage.Finalizing
+        val uploadProgress = (uploadStage as? UploadStage.Uploading)?.progress ?: if (uploadStage is UploadStage.Finalizing || isCompleted) 1f else 0f
+
+        val animatedVeilAlpha by animateFloatAsState(
+            targetValue = GalleryItemTileVisuals.targetVeilAlpha(isUploading),
+            animationSpec = tween(durationMillis = GalleryItemTileVisuals.VEIL_FADE_OUT_DURATION_MS),
+            label = "uploadVeilAlpha"
+        )
+
+        val keepFullHeight = GalleryItemTileVisuals.shouldKeepFullHeight(isCompleted, animatedVeilAlpha)
         val animatedUploadHeight by animateFloatAsState(
-            targetValue = if (isUploading) uploadProgress.coerceIn(0f, 1f) else 0f,
-            animationSpec = tween(durationMillis = 200),
+            targetValue = GalleryItemTileVisuals.targetVeilHeight(isUploading, uploadProgress, keepFullHeight),
+            animationSpec = tween(durationMillis = GalleryItemTileVisuals.VEIL_RISE_DURATION_MS),
             label = "uploadVeilHeight"
         )
 
-        if (animatedUploadHeight > 0.01f) {
+        if (animatedUploadHeight > 0.01f && animatedVeilAlpha > 0.001f) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .fillMaxHeight(animatedUploadHeight)
                     .align(Alignment.BottomCenter)
-                    .background(Color.Black.copy(alpha = 0.38f))
+                    .background(Color.Black.copy(alpha = animatedVeilAlpha))
             )
         }
 
@@ -142,12 +156,10 @@ fun GalleryItemTile(
         AnimatedVisibility(
             visible = showCompletedFlash,
             enter = fadeIn(tween(150)),
-            exit = fadeOut(tween(400))
+            exit = fadeOut(tween(600))
         ) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.38f)),
+                modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
                 Surface(
@@ -188,4 +200,27 @@ fun GalleryItemTile(
             }
         }
     }
+}
+
+/**
+ * Constants and state calculation helpers for GalleryItemTile upload veil and animations.
+ */
+object GalleryItemTileVisuals {
+    const val VEIL_ALPHA = 0.38f
+    const val VEIL_FADE_OUT_DURATION_MS = 600
+    const val VEIL_RISE_DURATION_MS = 450
+    const val COMPLETED_FLASH_DURATION_MS = 800L
+
+    fun targetVeilAlpha(isUploading: Boolean): Float =
+        if (isUploading) VEIL_ALPHA else 0.0f
+
+    fun shouldKeepFullHeight(isCompleted: Boolean, animatedVeilAlpha: Float): Boolean =
+        isCompleted || animatedVeilAlpha > 0.01f
+
+    fun targetVeilHeight(
+        isUploading: Boolean,
+        uploadProgress: Float,
+        keepFullHeight: Boolean
+    ): Float =
+        if (keepFullHeight) 1f else if (isUploading) uploadProgress.coerceIn(0f, 1f) else 0f
 }

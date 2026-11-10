@@ -282,4 +282,69 @@ class EncryptedThumbnailLoaderTest {
 
         tempFile.delete()
     }
+
+    @Test
+    fun loadLocalThumbnail_videoMimeType_checksMemoryCacheFirst() {
+        val fileId = "video-file-1"
+        val cachedFrame = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
+        loader.memoryCache.put(fileId, cachedFrame)
+
+        val uri = android.net.Uri.parse("content://media/external/video/media/999")
+        val result = loader.loadLocalThumbnail(
+            contentResolver = context.contentResolver,
+            uri = uri,
+            fileId = fileId,
+            mimeType = "video/mp4"
+        )
+
+        assertNotNull(result)
+        assertEquals(cachedFrame, result)
+    }
+
+    @Test
+    fun loadLocalThumbnail_videoMimeType_handlesMissingGracefully() {
+        val uri = android.net.Uri.parse("content://media/external/video/media/invalid_id")
+        val result = loader.loadLocalThumbnail(
+            contentResolver = context.contentResolver,
+            uri = uri,
+            fileId = "video-invalid",
+            mimeType = "video/mp4"
+        )
+        assertNull(result)
+    }
+
+    @Test
+    fun loadLocalUriPreview_videoMimeType_cachesDecodedFrame() {
+        val uri = android.net.Uri.parse("content://media/external/video/media/cached_vid")
+        val cachedFrame = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        loader.memoryCache.put(uri.toString(), cachedFrame)
+
+        val result = loader.loadLocalUriPreview(
+            contentResolver = context.contentResolver,
+            uri = uri,
+            targetSize = 180,
+            mimeType = "video/mp4"
+        )
+
+        assertNotNull(result)
+        assertEquals(cachedFrame, result)
+    }
+
+    @Test
+    fun loadLocalThumbnail_nullFileId_cachesByUriString() {
+        val uri = android.net.Uri.parse("content://media/external/video/media/null_file_id_vid")
+        val cachedFrame = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
+        loader.memoryCache.put(uri.toString(), cachedFrame)
+
+        val result = loader.loadLocalThumbnail(
+            contentResolver = context.contentResolver,
+            uri = uri,
+            fileId = null,
+            mimeType = "video/mp4"
+        )
+
+        assertNotNull(result)
+        assertEquals(cachedFrame, result)
+    }
 }
+
