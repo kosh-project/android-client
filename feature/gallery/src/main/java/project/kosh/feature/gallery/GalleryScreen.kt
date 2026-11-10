@@ -1,15 +1,26 @@
 package project.kosh.feature.gallery
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,32 +29,23 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
-import android.Manifest
-import android.content.pm.PackageManager
-import android.widget.Toast
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Image
-import androidx.compose.ui.draw.blur
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
-import kotlinx.coroutines.delay
-import project.kosh.core.model.ActivePairingSession
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -67,6 +69,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -74,6 +77,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -84,18 +89,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import kotlinx.coroutines.delay
 import project.kosh.core.auth.PairingState
+import project.kosh.core.model.ActivePairingSession
 import project.kosh.feature.auth.QrCameraScannerDialog
 import project.kosh.feature.auth.QrCodeGenerator
+import project.kosh.feature.gallery.ui.FloatingUploadBar
+import project.kosh.feature.gallery.ui.FolderSelectionBottomSheet
+import project.kosh.feature.gallery.ui.GalleryItemTile
+import project.kosh.feature.gallery.ui.PermissionRationaleDialog
 
 /**
- * Modern Jetpack Compose screen providing media vault viewing, empty state, and CAS uploads.
- *
- * Displays an active session indicator, handles zero-knowledge media selection via the AndroidX
- * photo picker, and allows secure logout.
- *
- * @param viewModel The Hilt-backed [GalleryViewModel] managing uploads and session lifecycle.
- * @param onLogout Callback invoked when the user logs out, navigating back to auth.
+ * Modern Jetpack Compose screen providing media vault viewing, empty state,
+ * zero-knowledge encrypted thumbnails, folder sync onboarding, and batch CAS uploads.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -105,6 +111,16 @@ fun GalleryScreen(
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
+
+    val galleryItems by viewModel.galleryItems.collectAsState()
+    val activeUploadStages by viewModel.activeUploadStages.collectAsState()
+    val batchUploadState by viewModel.batchUploadState.collectAsState()
+
+    val mediaFolders by viewModel.mediaFolders.collectAsState()
+    val isScanningFolders by viewModel.isScanningFolders.collectAsState()
+    val showFolderSelectionSheet by viewModel.showFolderSelectionSheet.collectAsState()
+    val showPermissionRationale by viewModel.showPermissionRationale.collectAsState()
+
     val uploadState by viewModel.uploadState.collectAsState()
     val activeUser by viewModel.activeUser.collectAsState()
     val isSessionActive by viewModel.isSessionActive.collectAsState()
@@ -153,6 +169,7 @@ fun GalleryScreen(
         animationSpec = tween(durationMillis = 600),
         label = "galleryExpiredOverlayAlpha"
     )
+
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showLinkDeviceBottomSheet by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
@@ -173,11 +190,33 @@ fun GalleryScreen(
         }
     }
 
+    val mediaPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
+    } else {
+        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+    }
+
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val anyGranted = permissions.values.any { it }
+        if (anyGranted) {
+            viewModel.onPermissionGranted(context.contentResolver)
+        } else {
+            Toast.makeText(
+                context,
+                "Media access is required to automatically discover and sync photo folders",
+                Toast.LENGTH_SHORT
+            ).show()
+            viewModel.dismissPermissionRationale()
+        }
+    }
+
     val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri != null) {
-            viewModel.uploadPhoto(context.contentResolver, uri)
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.enqueueUploads(context.contentResolver, uris)
         }
     }
 
@@ -230,6 +269,13 @@ fun GalleryScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { viewModel.openFolderSelection() }) {
+                        Icon(
+                            imageVector = Icons.Default.FolderShared,
+                            contentDescription = "Sync Folders",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     IconButton(onClick = {
                         showLinkDeviceBottomSheet = true
                         viewModel.startHostPairing()
@@ -273,208 +319,143 @@ fun GalleryScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
-                .verticalScroll(rememberScrollState()),
-            contentAlignment = Alignment.Center
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                // Upload Status Feedback Card
-                AnimatedVisibility(
-                    visible = uploadState !is UploadUiState.Idle,
-                    enter = fadeIn(),
-                    exit = fadeOut()
-                ) {
-                    when (val current = uploadState) {
-                        is UploadUiState.Uploading -> {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 24.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surface
-                                ),
-                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                            ) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = "Streaming to CAS vault...",
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                        Text(
-                                            text = current.fileName,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                    Spacer(Modifier.height(10.dp))
-                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                                }
-                            }
-                        }
-                        is UploadUiState.Success -> {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 24.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = "Success",
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                    Spacer(Modifier.width(12.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = current.message,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
-                                        Text(
-                                            text = current.fileName,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { viewModel.dismissUploadState() },
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Dismiss",
-                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        is UploadUiState.Error -> {
-                            Card(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(bottom = 24.dp),
-                                shape = RoundedCornerShape(16.dp),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.errorContainer
-                                )
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Warning,
-                                        contentDescription = "Error",
-                                        tint = MaterialTheme.colorScheme.onErrorContainer,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                    Spacer(Modifier.width(12.dp))
-                                    Text(
-                                        text = current.message,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onErrorContainer,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    IconButton(
-                                        onClick = { viewModel.dismissUploadState() },
-                                        modifier = Modifier.size(24.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Dismiss",
-                                            tint = MaterialTheme.colorScheme.onErrorContainer,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        is UploadUiState.Idle -> {}
-                    }
-                }
-
-                // Modern Empty State Container
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.size(96.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = "Empty Vault",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(44.dp)
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(24.dp))
-
-                Text(
-                    text = "Nothing uploaded yet",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(Modifier.height(8.dp))
-
-                Text(
-                    text = "Your private storage vault is currently empty. Photos and documents you upload will be chunked, encrypted with AES-256-GCM, and stored in your node's Content-Addressable Storage.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    lineHeight = 22.sp,
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
-
-                Spacer(Modifier.height(32.dp))
-
-                Button(
-                    onClick = {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                        )
-                    },
+            if (galleryItems.isEmpty() && !batchUploadState.isUploading) {
+                // Empty Vault State
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth(0.7f)
-                        .height(48.dp),
-                    shape = RoundedCornerShape(12.dp)
+                        .fillMaxSize()
+                        .padding(24.dp)
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.size(96.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "Empty Vault",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(44.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(24.dp))
+
+                    Text(
+                        text = "Nothing uploaded yet",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
                     )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Select Media to Upload", fontWeight = FontWeight.SemiBold)
+
+                    Spacer(Modifier.height(8.dp))
+
+                    Text(
+                        text = "Your private storage vault is currently empty. Photos and documents you upload will be chunked, encrypted with AES-256-GCM, and stored in your node's Content-Addressable Storage.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 22.sp,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+
+                    Spacer(Modifier.height(32.dp))
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Select Photos")
+                        }
+
+                        OutlinedButton(
+                            onClick = { viewModel.openFolderSelection() },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.FolderShared, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Sync Folders")
+                        }
+                    }
+                }
+            } else {
+                // Interactive Media Grid
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 108.dp),
+                    contentPadding = PaddingValues(2.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    items(galleryItems, key = { it.asset.fileId }) { item ->
+                        var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf<Bitmap?>(null) }
+
+                        LaunchedEffect(item.asset.fileId) {
+                            thumbnailBitmap = viewModel.loadThumbnail(item)
+                        }
+
+                        val uploadStage = activeUploadStages[item.asset.fileId]
+
+                        GalleryItemTile(
+                            item = item,
+                            thumbnail = thumbnailBitmap,
+                            uploadStage = uploadStage,
+                            onClick = {
+                                // Fullscreen viewer deferred to next iteration
+                            }
+                        )
+                    }
                 }
             }
+
+            // Bottom Floating Batch Upload Bar (Music Player Style)
+            FloatingUploadBar(
+                batchState = batchUploadState,
+                onDismiss = { viewModel.dismissBatchBar() },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 80.dp) // Pinned safely above Extended FAB
+            )
         }
+    }
+
+    // Permission Rationale Onboarding Dialog
+    if (showPermissionRationale) {
+        PermissionRationaleDialog(
+            onGrantPermission = {
+                mediaPermissionLauncher.launch(mediaPermissions)
+            },
+            onDismiss = {
+                viewModel.dismissPermissionRationale()
+            }
+        )
+    }
+
+    // MediaStore Folder Selection Modal Sheet
+    if (showFolderSelectionSheet) {
+        FolderSelectionBottomSheet(
+            folders = mediaFolders,
+            isLoading = isScanningFolders,
+            onSaveSelection = { selectedBuckets ->
+                viewModel.saveFolderSelection(selectedBuckets, context.contentResolver)
+            },
+            onDismiss = {
+                viewModel.dismissFolderSelection()
+            }
+        )
     }
 
     // Logout Confirmation Dialog
@@ -670,7 +651,6 @@ fun GalleryScreen(
                                     currentMailboxId.uppercase()
                                 }
 
-                                // Crockford Pairing Code Card
                                 Surface(
                                     shape = RoundedCornerShape(16.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant,
@@ -705,7 +685,6 @@ fun GalleryScreen(
 
                                 Spacer(Modifier.height(16.dp))
 
-                                // QR Code Surface (210dp)
                                 val qrBitmap = remember(currentQrJson) {
                                     try {
                                         QrCodeGenerator.generate(currentQrJson, 512)
@@ -747,7 +726,6 @@ fun GalleryScreen(
                                 }
                             }
 
-                            // Expired Overlay with animated fade-in & Re-generate Mailbox Button
                             if (expiredOverlayAlpha > 0f) {
                                 Surface(
                                     shape = RoundedCornerShape(16.dp),
@@ -799,16 +777,9 @@ fun GalleryScreen(
                                             shape = RoundedCornerShape(24.dp),
                                             modifier = Modifier.height(48.dp)
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Refresh,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
+                                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                             Spacer(Modifier.width(8.dp))
-                                            Text(
-                                                text = "Create New Mailbox",
-                                                fontWeight = FontWeight.SemiBold
-                                            )
+                                            Text("Generate New Code")
                                         }
                                     }
                                 }
@@ -817,124 +788,78 @@ fun GalleryScreen(
 
                         Spacer(Modifier.height(20.dp))
 
-                        // Bi-directional Action 1: Scan New Device QR Code
-                        Button(
-                            onClick = {
-                                val hasPermission = ContextCompat.checkSelfPermission(
-                                    context,
-                                    Manifest.permission.CAMERA
-                                ) == PackageManager.PERMISSION_GRANTED
-                                if (hasPermission) {
-                                    showCameraScanner = true
-                                } else {
-                                    cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(52.dp),
-                            shape = RoundedCornerShape(26.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Share,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text("Scan New Device QR Code", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        }
-
-                        Spacer(Modifier.height(10.dp))
-
-                        // Bi-directional Action 2: Enter Pairing Code manually (if new device has no camera)
-                        if (!showManualCodeEntry) {
-                            OutlinedButton(
-                                onClick = { showManualCodeEntry = true },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(52.dp),
-                                shape = RoundedCornerShape(26.dp)
-                            ) {
-                                Text("Enter Code from New Device", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                            }
-                        } else {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(
-                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                        RoundedCornerShape(16.dp)
-                                    )
-                                    .padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = "Enter 8-Character Pairing Code",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(Modifier.height(8.dp))
-                                OutlinedTextField(
-                                    value = manualPairingCode,
-                                    onValueChange = { if (it.length <= 10) manualPairingCode = it.uppercase() },
-                                    label = { Text("Pairing Code") },
-                                    placeholder = { Text("e.g. ABCD-EFGH") },
-                                    singleLine = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(12.dp)
-                                )
-                                Spacer(Modifier.height(10.dp))
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    TextButton(onClick = {
-                                        showManualCodeEntry = false
-                                        manualPairingCode = ""
-                                    }) {
-                                        Text("Cancel")
-                                    }
-                                    Spacer(Modifier.width(8.dp))
-                                    Button(
-                                        onClick = {
-                                            viewModel.fulfillReceiverCode(manualPairingCode)
-                                            showManualCodeEntry = false
-                                            manualPairingCode = ""
-                                        },
-                                        enabled = manualPairingCode.replace("-", "").trim().length == 8,
-                                        shape = RoundedCornerShape(20.dp)
-                                    ) {
-                                        Text("Link")
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(10.dp))
-
-                        TextButton(
-                            onClick = {
-                                viewModel.stopHostPairing()
-                                showLinkDeviceBottomSheet = false
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                        ) {
-                            Text("Cancel", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    } else if (pairingState is PairingState.AwaitingFulfillment) {
-                        CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
+                        HorizontalDivider(modifier = Modifier.fillMaxWidth(0.9f))
                         Spacer(Modifier.height(16.dp))
+
                         Text(
-                            text = "Transferring master vault key to device...",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "Or scan a QR code from another device",
+                            style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Spacer(Modifier.height(10.dp))
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                                        showCameraScanner = true
+                                    } else {
+                                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                                    }
+                                },
+                                shape = RoundedCornerShape(20.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                            ) {
+                                Text("Scan Camera QR", fontSize = 13.sp)
+                            }
+
+                            OutlinedButton(
+                                onClick = { showManualCodeEntry = !showManualCodeEntry },
+                                shape = RoundedCornerShape(20.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                            ) {
+                                Text(if (showManualCodeEntry) "Hide Code" else "Enter Code", fontSize = 13.sp)
+                            }
+                        }
+
+                        if (showManualCodeEntry) {
+                            Spacer(Modifier.height(14.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = manualPairingCode,
+                                    onValueChange = { manualPairingCode = it },
+                                    label = { Text("8-Character Code") },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Button(
+                                    onClick = { viewModel.fulfillReceiverCode(manualPairingCode) },
+                                    enabled = manualPairingCode.trim().replace("-", "").replace(" ", "").length == 8,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.height(54.dp)
+                                ) {
+                                    Text("Link")
+                                }
+                            }
+                        }
                     } else {
-                        CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(40.dp))
-                        Spacer(Modifier.height(16.dp))
+                        CircularProgressIndicator(strokeWidth = 3.dp, modifier = Modifier.size(36.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text(
-                            text = "Preparing pairing session...",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = "Initializing secure pairing mailbox...",
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -943,14 +868,13 @@ fun GalleryScreen(
         }
     }
 
-    // Embedded Camera QR Scanner Dialog for peer pairing
     if (showCameraScanner) {
         QrCameraScannerDialog(
             onDismiss = { showCameraScanner = false },
-            onScanned = { _, rawValue ->
+            onScanned = { _, scannedJson ->
                 showCameraScanner = false
-                if (rawValue != null) {
-                    viewModel.fulfillReceiverQr(rawValue)
+                if (scannedJson != null) {
+                    viewModel.fulfillReceiverQr(scannedJson)
                 }
             }
         )
