@@ -64,7 +64,7 @@ class MediaRepositoryTest {
 
     private fun sampleCrypto(fileId: String = "f1"): MediaCryptoMapping = MediaCryptoMapping(
         fileId = fileId,
-        plaintextHash = "plain-$fileId",
+        plaintextSha256 = "plain-$fileId",
         wrappedDek = "0".repeat(120),
         uploadStatus = UploadStatus.PENDING
     )

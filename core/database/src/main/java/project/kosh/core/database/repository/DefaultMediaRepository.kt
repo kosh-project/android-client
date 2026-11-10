@@ -109,8 +109,11 @@ class DefaultMediaRepository @Inject constructor(
     override fun observeAllMediaWithCrypto(): Flow<List<MediaWithCryptoDetails>> =
         mediaAssetDao.observeAllMediaWithCrypto()
 
+    override suspend fun findByPlaintextSha256(plaintextSha256: String): MediaCryptoMapping? =
+        mediaCryptoDao.getByPlaintextSha256(plaintextSha256)?.toDomainModel()
+
     override suspend fun findByPlaintextHash(plaintextHash: String): MediaCryptoMapping? =
-        mediaCryptoDao.getByPlaintextHash(plaintextHash)?.toDomainModel()
+        findByPlaintextSha256(plaintextHash)
 
     override suspend fun findByCiphertextHash(ciphertextHash: String): MediaCryptoMapping? =
         mediaCryptoDao.getByCiphertextHash(ciphertextHash)?.toDomainModel()

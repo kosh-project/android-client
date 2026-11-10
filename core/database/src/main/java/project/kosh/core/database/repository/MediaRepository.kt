@@ -55,6 +55,8 @@ interface MediaRepository {
 
     fun observeAllMediaWithCrypto(): Flow<List<MediaWithCryptoDetails>>
 
+    suspend fun findByPlaintextSha256(plaintextSha256: String): MediaCryptoMapping?
+
     suspend fun findByPlaintextHash(plaintextHash: String): MediaCryptoMapping?
 
     suspend fun findByCiphertextHash(ciphertextHash: String): MediaCryptoMapping?
