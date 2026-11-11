@@ -9,8 +9,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -70,6 +74,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshState
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -78,10 +86,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -95,6 +106,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import project.kosh.core.auth.PairingState
 import project.kosh.core.model.ActivePairingSession
 import project.kosh.feature.auth.QrCameraScannerDialog
@@ -132,8 +144,13 @@ fun GalleryScreen(
     val pairingState by viewModel.pairingState.collectAsState()
     val activePairingSession by viewModel.activePairingSession.collectAsState()
     val pairingSuccessMessage by viewModel.pairingSuccessMessage.collectAsState()
+    val isSyncing by viewModel.isSyncing.collectAsState()
 
     var isSessionExpired by remember(activePairingSession) { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        viewModel.checkAndRestoreSnapshot()
+    }
 
     LaunchedEffect(pairingState) {
         when (val p = pairingState) {
@@ -320,12 +337,161 @@ fun GalleryScreen(
             )
         }
     ) { innerPadding ->
-        Box(
+        val coroutineScope = rememberCoroutineScope()
+        var isManualRefreshingVisual by remember { mutableStateOf(false) }
+        var isDismissingAfterRefresh by remember { mutableStateOf(false) }
+
+        val pullToRefreshAnim = remember { Animatable(0f, Float.VectorConverter) }
+        val pullToRefreshState = remember(pullToRefreshAnim) {
+            object : PullToRefreshState {
+                override val distanceFraction: Float
+                    get() = pullToRefreshAnim.value
+
+                override val isAnimating: Boolean
+                    get() = pullToRefreshAnim.isRunning
+
+                override suspend fun animateToThreshold() {
+                    pullToRefreshAnim.animateTo(
+                        targetValue = 1f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    )
+                }
+
+                override suspend fun animateToHidden() {
+                    pullToRefreshAnim.animateTo(
+                        targetValue = 0f,
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
+                    )
+                }
+
+                override suspend fun snapTo(targetValue: Float) {
+                    pullToRefreshAnim.snapTo(targetValue)
+                }
+            }
+        }
+
+        val isRefreshing = isManualRefreshingVisual || isSyncing
+
+        val overstretchProgress = pullToRefreshState.distanceFraction.coerceIn(0f, 1.5f)
+        val overstretchY = (96.dp * overstretchProgress)
+
+        val animatedScaleRelaxation by animateFloatAsState(
+            targetValue = if (isRefreshing || isDismissingAfterRefresh) 0f else 1f,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            ),
+            label = "galleryPullScaleRelaxation"
+        )
+        val overstretchScaleY = 1f + (overstretchProgress * 0.06f * animatedScaleRelaxation)
+
+        val indicatorAlpha by animateFloatAsState(
+            targetValue = when {
+                isRefreshing -> 1f
+                isDismissingAfterRefresh -> 0f
+                pullToRefreshState.isAnimating -> 0f
+                overstretchProgress > 0.05f -> (overstretchProgress * 2.5f).coerceIn(0f, 1f)
+                else -> 0f
+            },
+            animationSpec = tween(durationMillis = 250),
+            label = "galleryIndicatorAlpha"
+        )
+
+        val indicatorScale by animateFloatAsState(
+            targetValue = when {
+                isRefreshing -> 1f
+                isDismissingAfterRefresh -> 0.8f
+                pullToRefreshState.isAnimating -> 0.8f
+                overstretchProgress > 0.05f -> (0.6f + overstretchProgress * 0.4f).coerceIn(0.6f, 1f)
+                else -> 0.6f
+            },
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioMediumBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            ),
+            label = "galleryIndicatorScale"
+        )
+
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = {
+                coroutineScope.launch {
+                    try {
+                        isDismissingAfterRefresh = false
+                        isManualRefreshingVisual = true
+                        val syncJob = viewModel.triggerManualSync()
+                        val startTime = System.currentTimeMillis()
+                        syncJob.join()
+                        val elapsed = System.currentTimeMillis() - startTime
+                        val minDisplayMs = 2000L
+                        if (elapsed < minDisplayMs) {
+                            delay(minDisplayMs - elapsed)
+                        }
+                        isDismissingAfterRefresh = true
+                        isManualRefreshingVisual = false
+                        pullToRefreshState.animateToHidden()
+                    } finally {
+                        isDismissingAfterRefresh = false
+                        isManualRefreshingVisual = false
+                    }
+                }
+            },
+            state = pullToRefreshState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .background(MaterialTheme.colorScheme.background)
+                .background(MaterialTheme.colorScheme.background),
+            indicator = {}
         ) {
+            // Overstretched Header Space containing M3 Loading Indicator
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(overstretchY)
+                    .align(Alignment.TopCenter)
+                    .graphicsLayer {
+                        alpha = indicatorAlpha
+                        scaleX = indicatorScale
+                        scaleY = indicatorScale
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                if (isRefreshing || isDismissingAfterRefresh) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(32.dp),
+                        strokeWidth = 3.5.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        strokeCap = StrokeCap.Round
+                    )
+                } else if (overstretchProgress > 0.05f) {
+                    val pullProgress = (overstretchProgress / 1.0f).coerceIn(0f, 1f)
+                    CircularProgressIndicator(
+                        progress = { pullProgress },
+                        modifier = Modifier.size(32.dp),
+                        strokeWidth = 3.5.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        strokeCap = StrokeCap.Round
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        translationY = overstretchY.toPx()
+                        scaleY = overstretchScaleY
+                        transformOrigin = TransformOrigin(0.5f, 0f)
+                    }
+            ) {
             if (galleryItems.isEmpty() && !batchUploadState.isUploading) {
                 // Empty Vault State
                 Column(
@@ -456,6 +622,7 @@ fun GalleryScreen(
                     }
                 }
             }
+        }
 
             // Bottom Floating Batch Upload Bar (Music Player Style)
             FloatingUploadBar(
