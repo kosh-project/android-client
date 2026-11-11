@@ -30,6 +30,12 @@ interface MediaCryptoDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(crypto: MediaCryptoMappingEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(mappings: List<MediaCryptoMappingEntity>)
+
+    @Query("SELECT * FROM media_crypto_mapping WHERE is_deleted = 0")
+    suspend fun getAll(): List<MediaCryptoMappingEntity>
+
     @Update
     suspend fun update(crypto: MediaCryptoMappingEntity)
 

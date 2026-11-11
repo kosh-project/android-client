@@ -34,6 +34,9 @@ interface AlbumDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(album: AlbumEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllAlbums(albums: List<AlbumEntity>)
+
     @Update
     suspend fun update(album: AlbumEntity)
 
@@ -126,6 +129,12 @@ interface AlbumDao {
 
     @Upsert
     suspend fun insertCrossRefs(crossRefs: List<AlbumMediaCrossRef>)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAllCrossRefs(crossRefs: List<AlbumMediaCrossRef>)
+
+    @Query("SELECT * FROM album_media_cross_ref WHERE is_deleted = 0")
+    suspend fun getAllCrossRefs(): List<AlbumMediaCrossRef>
 
     @Query("DELETE FROM album_media_cross_ref WHERE album_id = :albumId AND file_id = :fileId")
     suspend fun deleteCrossRefInternal(albumId: String, fileId: String): Int

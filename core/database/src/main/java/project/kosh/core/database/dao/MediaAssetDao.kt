@@ -109,6 +109,9 @@ interface MediaAssetDao {
     suspend fun getAssetCount(): Int
 
     @Query("SELECT COUNT(*) FROM media_assets WHERE is_deleted = 0")
+    suspend fun getCount(): Int
+
+    @Query("SELECT COUNT(*) FROM media_assets WHERE is_deleted = 0")
     fun observeAssetCount(): Flow<Int>
 
     @Transaction
