@@ -156,6 +156,10 @@ fun AuthScreen(
     var activeQrPayloadJson by remember { mutableStateOf<String?>(null) }
     var isSessionExpired by remember(activePairingSession) { mutableStateOf(false) }
 
+    LaunchedEffect(Unit) {
+        viewModel.refreshStoredCredentials()
+    }
+
     LaunchedEffect(state) {
         if (state is AuthUiState.VaultUnlockRequired) {
             isVaultUnlockSession = true

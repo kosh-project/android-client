@@ -1,10 +1,16 @@
 package project.kosh.core.database.crdt
 
 import android.content.ContentResolver
+import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
+import android.util.Size
 import androidx.room.withTransaction
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.protobuf.ProtoBuf
 import project.kosh.core.crypto.AesGcmEnvelope
@@ -23,10 +29,12 @@ import project.kosh.core.model.AssetTag
 import project.kosh.core.model.ExifMetadata
 import project.kosh.core.model.MediaAsset
 import project.kosh.core.model.NetworkResult
+import project.kosh.core.model.UploadStage
 import project.kosh.core.model.UploadStatus
 import project.kosh.core.model.crdt.CrdtAction
 import project.kosh.core.network.AssetClient
 import java.io.ByteArrayInputStream
+import java.io.File
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Locale
@@ -61,7 +69,8 @@ class MediaUploadPipeline @Inject constructor(
     private val mediaCryptoDao: MediaCryptoDao,
     private val syncQueueDao: SyncQueueDao,
     private val lamportClockManager: LamportClockManager,
-    private val database: KoshDatabase
+    private val database: KoshDatabase,
+    @ApplicationContext private val context: Context? = null
 ) {
     private val protoBuf = ProtoBuf { }
 
@@ -74,6 +83,7 @@ class MediaUploadPipeline @Inject constructor(
      * @param originalFileName Optional user-facing file name.
      * @param customCapturedAt Optional timestamp override.
      * @param customExif Optional pre-extracted EXIF metadata.
+     * @param onProgress Optional callback reporting granular upload lifecycle stages.
      * @return [UploadResult.Success] on success (with deduplication status), or [UploadResult.Error].
      */
     suspend fun uploadFromBytes(
@@ -82,40 +92,66 @@ class MediaUploadPipeline @Inject constructor(
         masterVaultKey: MasterVaultKey,
         originalFileName: String? = null,
         customCapturedAt: Long? = null,
-        customExif: ExifMetadata? = null
+        customExif: ExifMetadata? = null,
+        customFileId: String? = null,
+        customThumbnailBytes: ByteArray? = null,
+        onProgress: ((UploadStage) -> Unit)? = null
     ): UploadResult {
         if (bytes.isEmpty()) {
-            return UploadResult.Error("Cannot upload empty media bytes")
+            val err = "Cannot upload empty media bytes"
+            onProgress?.invoke(UploadStage.Failed(err))
+            return UploadResult.Error(err)
         }
 
         // Step 1: Compute plaintext SHA-256 (hardware-accelerated)
+        onProgress?.invoke(UploadStage.Hashing(0.5f))
         val plaintextSha256 = MediaHasher.computeSha256(bytes)
+        onProgress?.invoke(UploadStage.Hashing(1.0f))
 
         // Step 2: Local Pre-Upload Deduplication Check
         val existingCrypto = mediaCryptoDao.getByPlaintextSha256(plaintextSha256)
         if (existingCrypto != null && existingCrypto.uploadStatus == UploadStatus.SYNCED) {
             val existingAsset = mediaAssetDao.getAssetById(existingCrypto.fileId)
             if (existingAsset != null) {
+                onProgress?.invoke(UploadStage.Completed)
                 return UploadResult.Success(existingAsset.toDomainModel(), isDeduplicated = true)
             }
         }
 
-        val fileId = UUID.randomUUID().toString()
+        val fileId = customFileId ?: UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
 
         // Step 3: Geometry & EXIF extraction
         val (width, height, parsedExif, capturedAt) = extractExifAndDimensions(bytes, customCapturedAt, customExif)
 
         // Step 4: Thumbnail Generation
+        onProgress?.invoke(UploadStage.GeneratingThumbnail)
         val thumbnailBytes = try {
-            if (mediaType.startsWith("image/", ignoreCase = true)) {
+            if (customThumbnailBytes != null) {
+                customThumbnailBytes
+            } else if (mediaType.startsWith("image/", ignoreCase = true)) {
                 ThumbnailGenerator.generateThumbnail(bytes)
-            } else null
+            } else if (mediaType.startsWith("video/", ignoreCase = true)) {
+                extractVideoThumbnailFromBytes(bytes)
+            } else {
+                null
+            }
         } catch (_: Exception) {
             null
         }
 
+        // Cache thumbnail locally if context is available
+        if (thumbnailBytes != null && context != null) {
+            try {
+                val thumbDir = File(context.cacheDir, "kosh_thumbnails").apply { mkdirs() }
+                File(thumbDir, "$fileId.webp").writeBytes(thumbnailBytes)
+            } catch (_: Exception) {
+                // Ignore disk cache write failure
+            }
+        }
+
         // Step 5: Cryptographic DEK Envelope Wrapping
+        onProgress?.invoke(UploadStage.Encrypting)
         val dek = ByteArray(32)
         SecureRandom().nextBytes(dek)
         val wrappedDekHex = AesGcmEnvelope.wrapKey(dek, masterVaultKey.keyBytes)
@@ -133,13 +169,40 @@ class MediaUploadPipeline @Inject constructor(
         } else null
 
         val assetFileName = originalFileName ?: "$fileId.bin"
-        val assetUploadRes = assetClient.uploadBytes(encryptedAsset, AssetTag.GALLERY_ITEM, assetFileName)
+        onProgress?.invoke(UploadStage.Uploading(0f, 0L, encryptedAsset.size.toLong()))
+        val startTime = System.currentTimeMillis()
+        var lastTime = startTime
+        var lastBytes = 0L
+        var currentSpeed = 0L
+
+        val assetUploadRes = assetClient.uploadBytes(
+            bytes = encryptedAsset,
+            tag = AssetTag.GALLERY_ITEM,
+            originalFileName = assetFileName,
+            onProgress = { sent, total ->
+                val nowTime = System.currentTimeMillis()
+                val timeDelta = nowTime - lastTime
+                if (timeDelta >= 400) {
+                    val bytesDelta = sent - lastBytes
+                    currentSpeed = (bytesDelta * 1000L) / timeDelta
+                    lastTime = nowTime
+                    lastBytes = sent
+                }
+                val progress = if (total > 0) sent.toFloat() / total else 0f
+                onProgress?.invoke(UploadStage.Uploading(progress, sent, total, currentSpeed))
+            }
+        )
         val assetCiphertextHash = when (assetUploadRes) {
             is NetworkResult.Success -> assetUploadRes.data
-            is NetworkResult.Failure -> return UploadResult.Error("Failed to upload encrypted asset to CAS: $assetUploadRes")
+            is NetworkResult.Failure -> {
+                val err = "Failed to upload encrypted asset to CAS: $assetUploadRes"
+                onProgress?.invoke(UploadStage.Failed(err))
+                return UploadResult.Error(err)
+            }
         }
 
         // Step 8: Atomic Persistence in Room
+        onProgress?.invoke(UploadStage.Finalizing)
         val localClock = lamportClockManager.tick()
         val deviceId = lamportClockManager.getDeviceId()
 
@@ -231,6 +294,7 @@ class MediaUploadPipeline @Inject constructor(
             syncQueueDao.enqueue(queueEntity)
         }
 
+        onProgress?.invoke(UploadStage.Completed)
         return UploadResult.Success(assetEntity.toDomainModel(), isDeduplicated = false)
     }
 
@@ -242,19 +306,115 @@ class MediaUploadPipeline @Inject constructor(
         uri: Uri,
         masterVaultKey: MasterVaultKey,
         mediaType: String? = null,
-        originalFileName: String? = null
+        originalFileName: String? = null,
+        customFileId: String? = null,
+        customCapturedAt: Long? = null,
+        onProgress: ((UploadStage) -> Unit)? = null
     ): UploadResult {
         val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: return UploadResult.Error("Could not open input stream from uri: $uri")
+            ?: run {
+                val err = "Could not open input stream from uri: $uri"
+                onProgress?.invoke(UploadStage.Failed(err))
+                return UploadResult.Error(err)
+            }
 
         val resolvedMediaType = mediaType ?: contentResolver.getType(uri) ?: "image/jpeg"
+
+        val customThumbnailBytes = if (resolvedMediaType.startsWith("video/", ignoreCase = true)) {
+            val videoBitmap: Bitmap? = try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try {
+                        contentResolver.loadThumbnail(uri, Size(512, 512), null)
+                    } catch (_: Exception) {
+                        extractVideoFrameFromUri(contentResolver, uri)
+                    }
+                } else {
+                    extractVideoFrameFromUri(contentResolver, uri)
+                }
+            } catch (_: Exception) {
+                null
+            }
+            videoBitmap?.let { bitmap ->
+                try {
+                    ThumbnailGenerator.compressBitmap(bitmap)
+                } finally {
+                    bitmap.recycle()
+                }
+            }
+        } else {
+            null
+        }
 
         return uploadFromBytes(
             bytes = bytes,
             mediaType = resolvedMediaType,
             masterVaultKey = masterVaultKey,
-            originalFileName = originalFileName
+            originalFileName = originalFileName,
+            customCapturedAt = customCapturedAt,
+            customFileId = customFileId,
+            customThumbnailBytes = customThumbnailBytes,
+            onProgress = onProgress
         )
+    }
+
+    private fun extractVideoFrameFromUri(contentResolver: ContentResolver, uri: Uri): Bitmap? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            val pfd = try {
+                contentResolver.openFileDescriptor(uri, "r")
+            } catch (_: Exception) {
+                null
+            }
+            if (pfd != null) {
+                pfd.use {
+                    retriever.setDataSource(it.fileDescriptor)
+                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        ?: retriever.frameAtTime
+                }
+            } else if (uri.path != null && File(uri.path!!).exists()) {
+                retriever.setDataSource(uri.path)
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.frameAtTime
+            } else if (context != null) {
+                retriever.setDataSource(context, uri)
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.frameAtTime
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun extractVideoThumbnailFromBytes(bytes: ByteArray): ByteArray? {
+        var tempFile: File? = null
+        val retriever = MediaMetadataRetriever()
+        return try {
+            tempFile = File.createTempFile("kosh_vid_thumb_", ".tmp", context?.cacheDir)
+            tempFile.writeBytes(bytes)
+            retriever.setDataSource(tempFile.absolutePath)
+            val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.frameAtTime
+            bitmap?.let { b ->
+                try {
+                    ThumbnailGenerator.compressBitmap(b)
+                } finally {
+                    b.recycle()
+                }
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                retriever.release()
+            } catch (_: Exception) {}
+            tempFile?.delete()
+        }
     }
 
     private data class ParsedMetadata(

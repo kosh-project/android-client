@@ -98,6 +98,33 @@ object ThumbnailGenerator {
     }
 
     /**
+     * Downscales and compresses a [Bitmap] into JPEG thumbnail bytes.
+     * The resulting image will have max(width, height) <= [maxDimension].
+     */
+    fun compressBitmap(
+        bitmap: Bitmap,
+        maxDimension: Int = MAX_THUMBNAIL_DIMENSION,
+        quality: Int = COMPRESS_QUALITY
+    ): ByteArray {
+        val currentMax = max(bitmap.width, bitmap.height)
+        val finalBitmap = if (currentMax > maxDimension) {
+            val scale = maxDimension.toFloat() / currentMax
+            val targetWidth = (bitmap.width * scale).toInt().coerceAtLeast(1)
+            val targetHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
+            Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+        } else {
+            bitmap
+        }
+
+        val outputStream = ByteArrayOutputStream()
+        finalBitmap.compress(Bitmap.CompressFormat.JPEG, quality, outputStream)
+        if (finalBitmap != bitmap) {
+            finalBitmap.recycle()
+        }
+        return outputStream.toByteArray()
+    }
+
+    /**
      * Generates a downscaled thumbnail from an [InputStream].
      */
     fun generateThumbnail(

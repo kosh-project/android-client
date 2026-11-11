@@ -82,16 +82,20 @@ class AndroidKeyStoreProvider @Inject constructor() : KeyStoreProvider {
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
                     try {
                         specBuilder.setUserAuthenticationParameters(
-                            0,
+                            60,
                             KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL
                         )
                     } catch (_: Exception) {
                         @Suppress("DEPRECATION")
                         specBuilder.setUserAuthenticationRequired(true)
+                        @Suppress("DEPRECATION")
+                        specBuilder.setUserAuthenticationValidityDurationSeconds(60)
                     }
                 } else {
                     @Suppress("DEPRECATION")
                     specBuilder.setUserAuthenticationRequired(true)
+                    @Suppress("DEPRECATION")
+                    specBuilder.setUserAuthenticationValidityDurationSeconds(60)
                 }
             }
             return specBuilder.build()

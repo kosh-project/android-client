@@ -100,10 +100,12 @@ class AssetClient @Inject constructor(
     suspend fun uploadBytes(
         bytes: ByteArray,
         tag: AssetTag,
-        originalFileName: String
+        originalFileName: String,
+        onProgress: ((bytesWritten: Long, totalBytes: Long) -> Unit)? = null
     ): NetworkResult<String> = withContext(Dispatchers.IO) {
         val baseUrl = getBaseUrl()
-        val requestBody = bytes.toRequestBody("application/octet-stream".toMediaType())
+        val rawBody = bytes.toRequestBody("application/octet-stream".toMediaType())
+        val requestBody = if (onProgress != null) ProgressRequestBody(rawBody, onProgress) else rawBody
 
         val request = Request.Builder()
             .url("$baseUrl/upload/${tag.id}")
@@ -138,10 +140,12 @@ class AssetClient @Inject constructor(
     suspend fun uploadFile(
         file: File,
         tag: AssetTag,
-        originalFileName: String
+        originalFileName: String,
+        onProgress: ((bytesWritten: Long, totalBytes: Long) -> Unit)? = null
     ): NetworkResult<String> = withContext(Dispatchers.IO) {
         val baseUrl = getBaseUrl()
-        val requestBody = file.asRequestBody("application/octet-stream".toMediaType())
+        val rawBody = file.asRequestBody("application/octet-stream".toMediaType())
+        val requestBody = if (onProgress != null) ProgressRequestBody(rawBody, onProgress) else rawBody
 
         val request = Request.Builder()
             .url("$baseUrl/upload/${tag.id}")
@@ -210,6 +214,37 @@ class AssetClient @Inject constructor(
             NetworkResult.fromThrowable(e)
         }
     }
+
+    /**
+     * Downloads an encrypted binary blob directly into memory from the server CAS vault.
+     *
+     * @param hash The 64-character lowercase hex BLAKE3 content hash of the requested asset.
+     * @return [NetworkResult.Success] containing the downloaded byte array,
+     *   or [NetworkResult.Failure] if the asset cannot be retrieved.
+     */
+    suspend fun downloadBlob(
+        hash: String
+    ): NetworkResult<ByteArray> = withContext(Dispatchers.IO) {
+        val baseUrl = getBaseUrl()
+        val request = Request.Builder()
+            .url("$baseUrl/assets/$hash")
+            .get()
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@use NetworkResult.fromHttp(response.code, response.body.string())
+                }
+
+                val bytes = response.body.bytes()
+                NetworkResult.Success(bytes)
+            }
+        } catch (e: Exception) {
+            NetworkResult.fromThrowable(e)
+        }
+    }
+
     suspend fun listAssets(
         tag: AssetTag,
         limit: Int = 50,

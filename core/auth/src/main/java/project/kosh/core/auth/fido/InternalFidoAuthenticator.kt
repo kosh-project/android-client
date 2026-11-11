@@ -268,30 +268,23 @@ class InternalFidoAuthenticator @Inject constructor(
         // 6. Compute SHA-256 over clientDataJSON
         val clientDataHash = MessageDigest.getInstance("SHA-256").digest(clientDataBytes)
 
-        // 7. Resolve hardware private key and prepare Signature instance
-        val privateKey = keyStoreProvider.getPrivateKey(record.keyAlias)
-            ?: throw FidoAuthenticationException("Hardware private key not found for alias: ${record.keyAlias}")
-
-        val signature = Signature.getInstance("SHA256withECDSA").apply {
-            initSign(privateKey)
-        }
-
-        val cryptoObject = try {
-            BiometricPrompt.CryptoObject(signature)
-        } catch (_: Exception) {
-            null
-        }
-
-        // 8. Prompt biometrics to authorize enclave signing operation
+        // 7. Prompt biometrics or device credentials to authorize enclave signing operation
         val authResult = biometricPromptProvider.authenticate(
             activity = activity,
             title = "Sign in with Passkey",
-            subtitle = "Confirm your biometrics to authenticate with ${record.rpId}",
-            cryptoObject = cryptoObject
+            subtitle = "Confirm your biometrics or screen lock to authenticate with ${record.rpId}",
+            cryptoObject = null
         )
 
+        // 8. Resolve hardware private key and prepare Signature instance
+        val privateKey = keyStoreProvider.getPrivateKey(record.keyAlias)
+            ?: throw FidoAuthenticationException("Hardware private key not found for alias: ${record.keyAlias}")
+
+        val activeSignature = authResult.cryptoObject?.signature ?: Signature.getInstance("SHA256withECDSA").apply {
+            initSign(privateKey)
+        }
+
         // 9. Sign concatenated authData || sha256(clientDataJSON)
-        val activeSignature = authResult.cryptoObject?.signature ?: signature
         activeSignature.update(authDataBytes)
         activeSignature.update(clientDataHash)
         val signatureBytes = activeSignature.sign()
@@ -313,14 +306,24 @@ class InternalFidoAuthenticator @Inject constructor(
 
     /**
      * Retrieves all passkey credentials enrolled in this internal authenticator.
+     *
+     * Validates that each credential has a corresponding hardware private key in [keyStoreProvider].
+     * Any orphaned records resulting from app reinstallation or KeyStore purges are filtered and pruned.
      */
     fun getAllCredentials(): List<EnrolledPasskeyRecord> {
         val storedJson = prefs.getString("records", null) ?: return emptyList()
-        return try {
+        val records = try {
             json.decodeFromString<List<EnrolledPasskeyRecord>>(storedJson)
         } catch (_: Exception) {
-            emptyList()
+            return emptyList()
         }
+        val validRecords = records.filter { keyStoreProvider.containsAlias(it.keyAlias) }
+        if (validRecords.size != records.size) {
+            prefs.edit {
+                putString("records", json.encodeToString(validRecords))
+            }
+        }
+        return validRecords
     }
 
     /**

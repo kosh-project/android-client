@@ -25,6 +25,7 @@ import project.kosh.core.model.UploadStatus
 import project.kosh.core.model.crdt.CrdtAction
 import project.kosh.core.model.crdt.SyncDeltaBundle
 import project.kosh.core.network.SyncClient
+import project.kosh.core.network.SyncHttpException
 import java.io.IOException
 import java.util.UUID
 import javax.inject.Inject
@@ -71,6 +72,9 @@ class CrdtSyncEngine @Inject constructor(
         const val MAX_SLICE_SIZE = 512 * 1024 // 512 KiB batch ceiling
         const val SEGMENT_HEADER_SIZE = 500L
     }
+
+    suspend fun getPendingQueueCount(namespace: String = "gallery"): Int =
+        syncQueueDao.getPendingCount(namespace)
 
     /**
      * Executes a complete bidirectional sync cycle for the specified [namespace].
@@ -158,7 +162,12 @@ class CrdtSyncEngine @Inject constructor(
             }
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
-            throw e
+            if (e is SyncHttpException && e.code == 404) {
+                // Initial clean state: Server has no segment created for this namespace yet.
+                // 0 inbound deltas to pull, proceed to push.
+            } else {
+                throw e
+            }
         }
 
         return Pair(pulledFrames, pulledActions)

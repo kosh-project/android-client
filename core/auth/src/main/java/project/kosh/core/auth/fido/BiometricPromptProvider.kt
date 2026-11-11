@@ -40,6 +40,10 @@ interface BiometricPromptProvider {
 
 /**
  * Production implementation of [BiometricPromptProvider] presenting AndroidX Biometric prompts.
+ *
+ * Supports both [BiometricManager.Authenticators.BIOMETRIC_STRONG] and
+ * [BiometricManager.Authenticators.DEVICE_CREDENTIAL] to allow device lock screen
+ * PIN/pattern/password fallback on devices lacking biometric hardware (such as Waydroid or emulators).
  */
 @Singleton
 class DefaultBiometricPromptProvider @Inject constructor() : BiometricPromptProvider {
@@ -52,18 +56,39 @@ class DefaultBiometricPromptProvider @Inject constructor() : BiometricPromptProv
     ): BiometricPrompt.AuthenticationResult = withContext(Dispatchers.Main) {
         suspendCancellableCoroutine { continuation ->
             val executor = ContextCompat.getMainExecutor(activity)
+            val biometricManager = BiometricManager.from(activity)
+
+            val canBoth = biometricManager.canAuthenticate(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            ) == BiometricManager.BIOMETRIC_SUCCESS
+            val canDeviceCredential = biometricManager.canAuthenticate(
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL
+            ) == BiometricManager.BIOMETRIC_SUCCESS
+            val canStrong = biometricManager.canAuthenticate(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG
+            ) == BiometricManager.BIOMETRIC_SUCCESS
+
+            val allowDeviceCredential = canBoth || canDeviceCredential
+
             val promptBuilder = BiometricPrompt.PromptInfo.Builder()
                 .setTitle(title)
                 .setSubtitle(subtitle)
-                .setNegativeButtonText("Cancel")
 
-            if (cryptoObject != null) {
-                promptBuilder.setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+            val authenticators = if (allowDeviceCredential) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                } else {
+                    BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                }
             } else {
-                promptBuilder.setAllowedAuthenticators(
-                    BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                            BiometricManager.Authenticators.BIOMETRIC_WEAK
-                )
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.BIOMETRIC_WEAK
+            }
+
+            promptBuilder.setAllowedAuthenticators(authenticators)
+
+            val isDeviceCredentialAllowed = (authenticators and BiometricManager.Authenticators.DEVICE_CREDENTIAL) != 0
+            if (!isDeviceCredentialAllowed) {
+                promptBuilder.setNegativeButtonText("Cancel")
             }
 
             val promptInfo = promptBuilder.build()
@@ -85,21 +110,28 @@ class DefaultBiometricPromptProvider @Inject constructor() : BiometricPromptProv
                                 BiometricCancelledException(errString.toString())
                             )
                         } else {
+                            val message = if (errorCode == BiometricPrompt.ERROR_NO_DEVICE_CREDENTIAL ||
+                                errorCode == BiometricPrompt.ERROR_NO_BIOMETRICS ||
+                                errorCode == BiometricPrompt.ERROR_HW_NOT_PRESENT
+                            ) {
+                                "Screen lock or biometrics required. Please configure a device PIN, pattern, or password in system settings."
+                            } else {
+                                "Authentication error ($errorCode): $errString"
+                            }
                             continuation.resumeWithException(
-                                FidoAuthenticationException("Biometric prompt error ($errorCode): $errString")
+                                FidoAuthenticationException(message)
                             )
                         }
                     }
                 }
 
                 override fun onAuthenticationFailed() {
-                    // Biometric attempt rejected (e.g. unrecognized fingerprint).
-                    // The prompt dialog remains visible on screen allowing subsequent attempts.
+                    // Biometric attempt rejected. Prompt remains visible allowing retry.
                 }
             }
 
             val prompt = BiometricPrompt(activity, executor, callback)
-            if (cryptoObject != null) {
+            if (cryptoObject != null && !isDeviceCredentialAllowed) {
                 prompt.authenticate(promptInfo, cryptoObject)
             } else {
                 prompt.authenticate(promptInfo)
