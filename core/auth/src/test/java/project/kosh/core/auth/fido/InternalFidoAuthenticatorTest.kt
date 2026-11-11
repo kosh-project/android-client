@@ -71,6 +71,7 @@ class InternalFidoAuthenticatorTest {
         every { context.getSharedPreferences(any(), any()) } returns prefs
 
         // KeyStore mock
+        every { keyStoreProvider.containsAlias(any()) } returns true
         every { keyStoreProvider.generateEcP256KeyPair(any(), any()) } returns ecPublicKey
         every { keyStoreProvider.getPublicKey(any()) } returns ecPublicKey
         every { keyStoreProvider.getPrivateKey(any()) } returns ecPrivateKey
@@ -317,6 +318,22 @@ class InternalFidoAuthenticatorTest {
     fun `resolveOriginForRp uses apk-key-hash origin for public web domains`() {
         val resolved = authenticator.resolveOriginForRp("auth.example.com")
         assertTrue(resolved.startsWith("android:apk-key-hash:"))
+    }
+
+    @Test
+    fun `getAllCredentials filters and prunes records whose keyAlias is missing from keyStoreProvider`() {
+        runBlocking {
+            val regChallenge = createSampleRegistrationChallenge()
+            authenticator.registerCredential(activity, regChallenge)
+
+            assertEquals(1, authenticator.getAllCredentials().size)
+
+            // Simulate keystore wipe or missing alias
+            every { keyStoreProvider.containsAlias(any()) } returns false
+
+            val sanitized = authenticator.getAllCredentials()
+            assertTrue(sanitized.isEmpty())
+        }
     }
 }
 
