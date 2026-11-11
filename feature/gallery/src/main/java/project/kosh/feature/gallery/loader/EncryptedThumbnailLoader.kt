@@ -11,6 +11,9 @@ import android.util.LruCache
 import android.util.Size
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import project.kosh.core.crypto.AesGcmEnvelope
 import project.kosh.core.crypto.MasterVaultKey
@@ -41,6 +44,7 @@ class EncryptedThumbnailLoader @Inject constructor(
     }
 
     internal val diskCacheDir = File(context.cacheDir, "kosh_thumbnails").apply { mkdirs() }
+    private val downloadSemaphore = Semaphore(4)
 
     private fun calculateInSampleSize(
         contentResolver: ContentResolver,
@@ -221,28 +225,52 @@ class EncryptedThumbnailLoader @Inject constructor(
 
         if (masterKey == null) return@withContext null
 
-        val tempFile = File.createTempFile("thumb_dl_", ".bin", context.cacheDir)
-        try {
-            when (val result = assetClient.downloadAsset(thumbHash, tempFile)) {
-                is NetworkResult.Success -> {
-                    try {
-                        val rawDek = AesGcmEnvelope.unwrapKey(wrappedDek, masterKey.keyBytes)
-                        val encryptedBytes = result.data.readBytes()
-                        val plaintextWebp = AesGcmEnvelope.decrypt(encryptedBytes, rawDek)
-                        diskFile.writeBytes(plaintextWebp)
-                        val bitmap = BitmapFactory.decodeByteArray(plaintextWebp, 0, plaintextWebp.size)
-                        if (bitmap != null) {
-                            memoryCache.put(fileId, bitmap)
-                            return@withContext bitmap
-                        }
-                    } catch (_: Exception) {
-                        return@withContext null
+        downloadSemaphore.withPermit {
+            // Re-check L2 cache within permit in case a concurrent fetch completed
+            if (diskFile.exists() && diskFile.length() > 0) {
+                try {
+                    val bitmap = BitmapFactory.decodeFile(diskFile.absolutePath)
+                    if (bitmap != null) {
+                        memoryCache.put(fileId, bitmap)
+                        return@withContext bitmap
                     }
+                } catch (_: Exception) {
+                    diskFile.delete()
                 }
-                else -> return@withContext null
             }
-        } finally {
-            tempFile.delete()
+
+            var attempts = 0
+            while (attempts < 3) {
+                attempts++
+                val tempFile = File.createTempFile("thumb_dl_", ".bin", context.cacheDir)
+                try {
+                    when (val result = assetClient.downloadAsset(thumbHash, tempFile)) {
+                        is NetworkResult.Success -> {
+                            try {
+                                val rawDek = AesGcmEnvelope.unwrapKey(wrappedDek, masterKey.keyBytes)
+                                val encryptedBytes = result.data.readBytes()
+                                val plaintextWebp = AesGcmEnvelope.decrypt(encryptedBytes, rawDek)
+                                diskFile.writeBytes(plaintextWebp)
+                                val bitmap = BitmapFactory.decodeByteArray(plaintextWebp, 0, plaintextWebp.size)
+                                if (bitmap != null) {
+                                    memoryCache.put(fileId, bitmap)
+                                    return@withContext bitmap
+                                }
+                            } catch (_: Exception) {
+                                return@withContext null
+                            }
+                        }
+                        is NetworkResult.Http.RateLimited -> {
+                            val waitMs = (result.retryAfterSeconds?.coerceAtLeast(1)?.times(1000L)) ?: 70L
+                            delay(waitMs)
+                            continue
+                        }
+                        else -> return@withContext null
+                    }
+                } finally {
+                    tempFile.delete()
+                }
+            }
         }
 
         null

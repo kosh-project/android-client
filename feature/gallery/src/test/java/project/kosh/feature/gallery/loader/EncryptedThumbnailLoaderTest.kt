@@ -346,5 +346,54 @@ class EncryptedThumbnailLoaderTest {
         assertNotNull(result)
         assertEquals(cachedFrame, result)
     }
+
+    @Test
+    fun loadThumbnail_retriesOnRateLimitedAndSucceeds() = runTest {
+        val fileId = "test-rate-limit-retry"
+        val testBitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val plainBytes = stream.toByteArray()
+
+        val dek = ByteArray(32) { (it + 5).toByte() }
+        val masterKey = MasterVaultKey(ByteArray(32) { (it + 20).toByte() })
+
+        val encryptedBytes = AesGcmEnvelope.encrypt(plainBytes, dek)
+        val wrappedDekHex = AesGcmEnvelope.wrapKey(dek, masterKey.keyBytes)
+        val thumbHash = "blake3-cas-rate-limit-hash"
+
+        var callCount = 0
+        coEvery { mockAssetClient.downloadAsset(thumbHash, any()) } answers {
+            callCount++
+            if (callCount == 1) {
+                NetworkResult.Http.RateLimited(retryAfterSeconds = null)
+            } else {
+                val destFile = secondArg<File>()
+                destFile.writeBytes(encryptedBytes)
+                NetworkResult.Success(destFile)
+            }
+        }
+
+        val item = MediaWithCryptoDetails(
+            asset = MediaAssetEntity(
+                fileId = fileId,
+                mediaType = "image/jpeg",
+                fileSize = plainBytes.size.toLong(),
+                capturedAt = 1000L
+            ),
+            cryptoMapping = MediaCryptoMappingEntity(
+                fileId = fileId,
+                plaintextSha256 = "dummy-sha256",
+                thumbnailCiphertextHash = thumbHash,
+                wrappedDek = wrappedDekHex,
+                wrappedThumbnailDek = wrappedDekHex
+            )
+        )
+
+        val result = loader.loadThumbnail(item, masterKey)
+
+        assertNotNull(result)
+        assertEquals(2, callCount)
+    }
 }
 

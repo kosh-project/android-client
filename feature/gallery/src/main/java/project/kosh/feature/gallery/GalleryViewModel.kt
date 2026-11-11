@@ -23,11 +23,17 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import project.kosh.core.auth.AuthRepository
 import project.kosh.core.auth.DevicePairingManager
 import project.kosh.core.auth.PairingState
+import project.kosh.core.crypto.MasterVaultKey
+import project.kosh.core.database.crdt.CrdtSyncEngine
 import project.kosh.core.database.crdt.MediaUploadPipeline
+import project.kosh.core.database.crdt.SnapshotSyncManager
 import project.kosh.core.database.crdt.UploadResult
+import project.kosh.core.database.dao.MediaAssetDao
 import project.kosh.core.database.entity.MediaAssetEntity
 import project.kosh.core.database.entity.MediaCryptoMappingEntity
 import project.kosh.core.database.model.MediaWithCryptoDetails
@@ -35,8 +41,10 @@ import project.kosh.core.database.repository.MediaRepository
 import project.kosh.core.model.ActivePairingSession
 import project.kosh.core.model.NetworkResult
 import project.kosh.core.model.PairingQrPayload
+import project.kosh.core.model.SyncNamespace
 import project.kosh.core.model.UploadStage
 import project.kosh.core.model.UploadStatus
+import project.kosh.feature.gallery.sync.SnapshotWorkManagerScheduler
 import project.kosh.core.network.AssetClient
 import project.kosh.feature.gallery.loader.EncryptedThumbnailLoader
 import project.kosh.feature.gallery.model.BatchUploadState
@@ -99,7 +107,11 @@ class GalleryViewModel @Inject constructor(
     private val mediaUploadPipeline: MediaUploadPipeline,
     private val mediaFolderScanner: MediaFolderScanner,
     private val syncFolderPreferences: SyncFolderPreferences,
-    val thumbnailLoader: EncryptedThumbnailLoader
+    val thumbnailLoader: EncryptedThumbnailLoader,
+    private val crdtSyncEngine: CrdtSyncEngine,
+    private val snapshotSyncManager: SnapshotSyncManager,
+    private val mediaAssetDao: MediaAssetDao,
+    private val snapshotScheduler: SnapshotWorkManagerScheduler
 ) : ViewModel() {
 
     internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
@@ -158,6 +170,11 @@ class GalleryViewModel @Inject constructor(
     private val _uploadStatus = MutableStateFlow("Idle")
     val uploadStatus: StateFlow<String> = _uploadStatus.asStateFlow()
 
+    // Manual pull-to-refresh sync state
+    private val _isManualRefreshing = MutableStateFlow(false)
+    val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
+    val isSyncing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
+
     private val _isSessionActive = MutableStateFlow(authRepository.isLoggedIn())
     val isSessionActive: StateFlow<Boolean> = _isSessionActive.asStateFlow()
 
@@ -186,6 +203,9 @@ class GalleryViewModel @Inject constructor(
         // Check first-time folder setup
         if (!syncFolderPreferences.hasCompletedFolderSetup()) {
             _showPermissionRationale.value = true
+        }
+        if (authRepository.isLoggedIn()) {
+            snapshotScheduler.schedulePeriodicSnapshot()
         }
     }
 
@@ -243,13 +263,57 @@ class GalleryViewModel @Inject constructor(
         enqueueUploads(contentResolver, listOf(uri))
     }
 
+    private var ledgerTickerJob: Job? = null
+
+    private fun startLedgerTicker(masterKey: MasterVaultKey) {
+        if (ledgerTickerJob?.isActive == true) return
+        ledgerTickerJob = viewModelScope.launch(ioDispatcher) {
+            while (isActive) {
+                delay(90_000L)
+                val currentKey = authRepository.getVaultKey() ?: masterKey
+                if (currentKey.isClosed || (!authRepository.isLoggedIn() && authRepository.getVaultKey() == null)) {
+                    break
+                }
+                try {
+                    if (crdtSyncEngine.getPendingQueueCount("gallery") > 0) {
+                        crdtSyncEngine.sync(currentKey, SyncNamespace.GALLERY)
+                    }
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    // Safe isolation: CAS upload is never disrupted by CRDT sync issues
+                }
+            }
+        }
+    }
+
+    private fun stopLedgerTicker() {
+        ledgerTickerJob?.cancel()
+        ledgerTickerJob = null
+    }
+
     private fun ensureUploadWorkerRunning() {
+        val masterKey = authRepository.getVaultKey()
+        if (masterKey != null && !masterKey.isClosed) {
+            startLedgerTicker(masterKey)
+        }
+
         if (uploadWorkerJob?.isActive == true) return
 
         uploadWorkerJob = viewModelScope.launch(ioDispatcher) {
             for (task in uploadChannel) {
                 processSingleUpload(task)
                 if (completedBatchCount >= totalBatchCount) {
+                    stopLedgerTicker()
+                    val key = authRepository.getVaultKey() ?: masterKey
+                    if (key != null && !key.isClosed) {
+                        try {
+                            crdtSyncEngine.sync(key, SyncNamespace.GALLERY)
+                        } catch (e: Exception) {
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            // Safe isolation
+                        }
+                    }
+
                     _batchUploadState.value = _batchUploadState.value.copy(
                         isUploading = false,
                         totalItems = 0,
@@ -275,6 +339,10 @@ class GalleryViewModel @Inject constructor(
             _activeUploadStages.value = _activeUploadStages.value - task.fileId - task.uri.toString()
             _inFlightUploads.value = _inFlightUploads.value - task.fileId
             return
+        }
+
+        if (ledgerTickerJob?.isActive != true) {
+            startLedgerTicker(masterKey)
         }
 
         val currentIndex = completedBatchCount + 1
@@ -556,11 +624,83 @@ class GalleryViewModel @Inject constructor(
     fun isSessionActive(): Boolean = authRepository.isLoggedIn()
 
     fun logout() {
+        snapshotScheduler.cancelPeriodicSnapshot()
+        manualSyncJob?.cancel()
+        manualSyncJob = null
+        stopLedgerTicker()
+        _isManualRefreshing.value = false
         authRepository.logout()
         _isSessionActive.value = false
         _activeUser.value = null
         thumbnailLoader.clearMemoryCache()
         thumbnailLoader.clearDiskCache()
+    }
+
+    /**
+     * Checks if the local database has 0 assets; if so, pulls and materializes the latest snapshot,
+     * and performs a follow-up delta sync to bring the client fully up to date.
+     * If the local database already has assets, triggers delta synchronization directly.
+     */
+    fun checkAndRestoreSnapshot(): Job = viewModelScope.launch(ioDispatcher) {
+        val masterKey = authRepository.getVaultKey() ?: return@launch
+        if (masterKey.isClosed) return@launch
+        try {
+            if (mediaAssetDao.getCount() == 0) {
+                try {
+                    snapshotSyncManager.restoreFromLatestSnapshot(masterKey, SyncNamespace.GALLERY)
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    // Continue to delta sync if snapshot fetch fails or no snapshot exists
+                }
+            }
+            crdtSyncEngine.sync(masterKey, SyncNamespace.GALLERY)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            // Safe isolation
+        }
+    }
+
+    private var manualSyncJob: Job? = null
+
+    /**
+     * Triggers a manual bidirectional Delta-CRDT sync for the gallery namespace.
+     */
+    fun triggerManualSync(): Job {
+        val masterKey = authRepository.getVaultKey()
+        if (masterKey == null || masterKey.isClosed || !authRepository.isLoggedIn()) {
+            return Job().apply { complete() }
+        }
+        if (!_isManualRefreshing.compareAndSet(expect = false, update = true)) {
+            return manualSyncJob ?: Job().apply { complete() }
+        }
+        val job = viewModelScope.launch(ioDispatcher) {
+            try {
+                withTimeoutOrNull(2000L) {
+                    crdtSyncEngine.sync(masterKey, SyncNamespace.GALLERY)
+                }
+            } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                // Safe isolation: network or ledger errors never crash the UI
+            } finally {
+                _isManualRefreshing.value = false
+            }
+        }
+        manualSyncJob = job
+        return job
+    }
+
+    /**
+     * Creates and registers a new encrypted point-in-time state snapshot with the server.
+     */
+    fun createSnapshot(): Job = viewModelScope.launch(ioDispatcher) {
+        val masterKey = authRepository.getVaultKey() ?: return@launch
+        if (masterKey.isClosed) return@launch
+        try {
+            snapshotSyncManager.createAndUploadSnapshot(masterKey, SyncNamespace.GALLERY)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            // Safe isolation
+        }
     }
 
     private fun queryNameAndSize(resolver: ContentResolver, uri: Uri): Pair<String?, Long> {

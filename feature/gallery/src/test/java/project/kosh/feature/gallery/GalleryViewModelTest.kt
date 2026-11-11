@@ -30,18 +30,25 @@ import project.kosh.core.auth.AuthRepository
 import project.kosh.core.auth.DevicePairingManager
 import project.kosh.core.auth.PairingState
 import project.kosh.core.crypto.MasterVaultKey
+import project.kosh.core.database.crdt.CrdtSyncEngine
 import project.kosh.core.database.crdt.MediaUploadPipeline
+import project.kosh.core.database.crdt.SnapshotSyncManager
+import project.kosh.core.database.crdt.SyncResult
 import project.kosh.core.database.crdt.UploadResult
+import project.kosh.core.database.dao.MediaAssetDao
 import project.kosh.core.database.model.MediaWithCryptoDetails
 import project.kosh.core.database.repository.MediaRepository
 import project.kosh.core.model.MediaAsset
 import project.kosh.core.model.NetworkResult
+import project.kosh.core.model.SyncNamespace
+import project.kosh.core.model.UploadStage
 import project.kosh.core.model.UploadStatus
 import project.kosh.core.network.AssetClient
 import project.kosh.feature.gallery.loader.EncryptedThumbnailLoader
 import project.kosh.feature.gallery.model.DiscoveredMediaItem
 import project.kosh.feature.gallery.model.MediaFolder
 import project.kosh.feature.gallery.sync.MediaFolderScanner
+import project.kosh.feature.gallery.sync.SnapshotWorkManagerScheduler
 import project.kosh.feature.gallery.sync.SyncFolderPreferences
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -57,6 +64,10 @@ class GalleryViewModelTest {
     private lateinit var mockMediaFolderScanner: MediaFolderScanner
     private lateinit var mockSyncFolderPreferences: SyncFolderPreferences
     private lateinit var mockThumbnailLoader: EncryptedThumbnailLoader
+    private lateinit var mockCrdtSyncEngine: CrdtSyncEngine
+    private lateinit var mockSnapshotSyncManager: SnapshotSyncManager
+    private lateinit var mockMediaAssetDao: MediaAssetDao
+    private lateinit var mockSnapshotScheduler: SnapshotWorkManagerScheduler
     private lateinit var viewModel: GalleryViewModel
 
     @Before
@@ -71,6 +82,10 @@ class GalleryViewModelTest {
         mockMediaFolderScanner = mockk(relaxed = true)
         mockSyncFolderPreferences = mockk(relaxed = true)
         mockThumbnailLoader = mockk(relaxed = true)
+        mockCrdtSyncEngine = mockk(relaxed = true)
+        mockSnapshotSyncManager = mockk(relaxed = true)
+        mockMediaAssetDao = mockk(relaxed = true)
+        mockSnapshotScheduler = mockk(relaxed = true)
 
         every { mockAuthRepository.isLoggedIn() } returns true
         every { mockAuthRepository.getActiveUsername() } returns "testuser"
@@ -89,7 +104,11 @@ class GalleryViewModelTest {
             mediaUploadPipeline = mockMediaUploadPipeline,
             mediaFolderScanner = mockMediaFolderScanner,
             syncFolderPreferences = mockSyncFolderPreferences,
-            thumbnailLoader = mockThumbnailLoader
+            thumbnailLoader = mockThumbnailLoader,
+            crdtSyncEngine = mockCrdtSyncEngine,
+            snapshotSyncManager = mockSnapshotSyncManager,
+            mediaAssetDao = mockMediaAssetDao,
+            snapshotScheduler = mockSnapshotScheduler
         ).apply {
             ioDispatcher = testDispatcher
         }
@@ -697,6 +716,358 @@ class GalleryViewModelTest {
 
         assertTrue(vm.uploadState.value is UploadUiState.Error)
         assertEquals(0, vm.galleryItems.value.size)
+    }
+
+    @Test
+    fun `90s ticker triggers crdtSyncEngine sync when pending queue count is positive`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 1.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockCrdtSyncEngine.getPendingQueueCount("gallery") } returns 3
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } returns SyncResult(0, 0, 0, 1, 3)
+
+        val contentResolver: ContentResolver = mockk(relaxed = true)
+        val uri: Uri = mockk(relaxed = true)
+        every { uri.toString() } returns "content://media/ticker_test"
+        every { contentResolver.getType(uri) } returns "image/jpeg"
+
+        // Make upload delay longer than 90s in virtual time
+        coEvery { mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            kotlinx.coroutines.delay(120_000L)
+            UploadResult.Success(
+                MediaAsset(
+                    fileId = "ticker-file",
+                    thumbnailHash = null,
+                    mediaType = "image/jpeg",
+                    fileSize = 100L,
+                    capturedAt = 1000L
+                ),
+                isDeduplicated = false
+            )
+        }
+
+        viewModel.enqueueUploads(contentResolver, listOf(uri))
+        testDispatcher.scheduler.advanceTimeBy(45_000L)
+        coVerify(exactly = 0) { mockCrdtSyncEngine.sync(any(), any()) }
+
+        testDispatcher.scheduler.advanceTimeBy(50_000L) // Total 95s > 90s tumble window
+        coVerify(atLeast = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+
+        testDispatcher.scheduler.advanceUntilIdle()
+    }
+
+    @Test
+    fun `batch completion triggers final immediate crdtSyncEngine sync`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 2.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockCrdtSyncEngine.getPendingQueueCount("gallery") } returns 0
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } returns SyncResult(0, 0, 0, 0, 0)
+
+        val contentResolver: ContentResolver = mockk(relaxed = true)
+        val uri: Uri = mockk(relaxed = true)
+        every { uri.toString() } returns "content://media/batch_complete"
+        every { contentResolver.getType(uri) } returns "image/jpeg"
+
+        coEvery { mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            UploadResult.Success(
+                MediaAsset(
+                    fileId = "batch-complete-file",
+                    thumbnailHash = null,
+                    mediaType = "image/jpeg",
+                    fileSize = 100L,
+                    capturedAt = 1000L
+                ),
+                isDeduplicated = false
+            )
+
+        viewModel.enqueueUploads(contentResolver, listOf(uri))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        coVerify(atLeast = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+        assertEquals(UploadStage.Completed, viewModel.batchUploadState.value.currentStage)
+        assertFalse(viewModel.batchUploadState.value.isUploading)
+    }
+
+    @Test
+    fun `error isolation ensures ledger sync failure does not disrupt CAS upload worker`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 3.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockCrdtSyncEngine.getPendingQueueCount("gallery") } returns 1
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } throws RuntimeException("Ledger server network error")
+
+        val contentResolver: ContentResolver = mockk(relaxed = true)
+        val uri: Uri = mockk(relaxed = true)
+        every { uri.toString() } returns "content://media/error_isolation"
+        every { contentResolver.getType(uri) } returns "image/jpeg"
+
+        coEvery { mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            UploadResult.Success(
+                MediaAsset(
+                    fileId = "isolated-file",
+                    thumbnailHash = null,
+                    mediaType = "image/jpeg",
+                    fileSize = 100L,
+                    capturedAt = 1000L
+                ),
+                isDeduplicated = false
+            )
+
+        viewModel.enqueueUploads(contentResolver, listOf(uri))
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        // Verify upload pipeline completed successfully despite sync throwing
+        coVerify(exactly = 1) { mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any()) }
+        assertEquals(UploadStage.Completed, viewModel.batchUploadState.value.currentStage)
+        assertFalse(viewModel.batchUploadState.value.isUploading)
+    }
+
+    @Test
+    fun `checkAndRestoreSnapshot restores snapshot and triggers sync when local asset count is zero`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 4.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockMediaAssetDao.getCount() } returns 0
+        coEvery { mockSnapshotSyncManager.restoreFromLatestSnapshot(vaultKey, SyncNamespace.GALLERY) } returns NetworkResult.Success(true)
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } returns SyncResult(0, 0, 0, 0, 0)
+
+        viewModel.checkAndRestoreSnapshot().join()
+
+        coVerify(exactly = 1) { mockSnapshotSyncManager.restoreFromLatestSnapshot(vaultKey, SyncNamespace.GALLERY) }
+        coVerify(exactly = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+    }
+
+    @Test
+    fun `checkAndRestoreSnapshot triggers delta sync when snapshot does not exist on server`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 4.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockMediaAssetDao.getCount() } returns 0
+        coEvery { mockSnapshotSyncManager.restoreFromLatestSnapshot(vaultKey, SyncNamespace.GALLERY) } returns NetworkResult.Success(false)
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } returns SyncResult(0, 0, 0, 0, 0)
+
+        viewModel.checkAndRestoreSnapshot().join()
+
+        coVerify(exactly = 1) { mockSnapshotSyncManager.restoreFromLatestSnapshot(vaultKey, SyncNamespace.GALLERY) }
+        coVerify(exactly = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+    }
+
+    @Test
+    fun `checkAndRestoreSnapshot triggers delta sync when snapshot restoration fails`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 4.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockMediaAssetDao.getCount() } returns 0
+        coEvery { mockSnapshotSyncManager.restoreFromLatestSnapshot(vaultKey, SyncNamespace.GALLERY) } returns NetworkResult.Http.NotFound(serverMessage = "No snapshot")
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } returns SyncResult(0, 0, 0, 0, 0)
+
+        viewModel.checkAndRestoreSnapshot().join()
+
+        coVerify(exactly = 1) { mockSnapshotSyncManager.restoreFromLatestSnapshot(vaultKey, SyncNamespace.GALLERY) }
+        coVerify(exactly = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+    }
+
+    @Test
+    fun `checkAndRestoreSnapshot triggers delta sync directly when local asset count is greater than zero`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 4.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockMediaAssetDao.getCount() } returns 15
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } returns SyncResult(0, 0, 0, 0, 0)
+        io.mockk.clearMocks(mockSnapshotSyncManager, answers = false)
+
+        viewModel.checkAndRestoreSnapshot().join()
+
+        coVerify(exactly = 0) { mockSnapshotSyncManager.restoreFromLatestSnapshot(any(), any()) }
+        coVerify(atLeast = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+    }
+
+    @Test
+    fun `logout cancels periodic snapshot scheduler`() {
+        viewModel.logout()
+        io.mockk.verify(exactly = 1) { mockSnapshotScheduler.cancelPeriodicSnapshot() }
+    }
+
+    @Test
+    fun `init schedules periodic snapshot when user is logged in`() {
+        io.mockk.verify(atLeast = 1) { mockSnapshotScheduler.schedulePeriodicSnapshot() }
+    }
+
+    @Test
+    fun `triggerManualSync runs crdtSyncEngine sync`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 5.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } returns SyncResult(0, 0, 0, 0, 0)
+
+        viewModel.triggerManualSync().join()
+
+        coVerify(exactly = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+    }
+
+    @Test
+    fun `triggerManualSync sets isManualRefreshing and isSyncing to true during sync and resets to false`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 5.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } coAnswers {
+            assertTrue(viewModel.isManualRefreshing.value)
+            assertTrue(viewModel.isSyncing.value)
+            SyncResult(0, 0, 0, 0, 0)
+        }
+
+        assertFalse(viewModel.isManualRefreshing.value)
+        assertFalse(viewModel.isSyncing.value)
+
+        viewModel.triggerManualSync().join()
+
+        coVerify(exactly = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+        assertFalse(viewModel.isManualRefreshing.value)
+        assertFalse(viewModel.isSyncing.value)
+    }
+
+    @Test
+    fun `triggerManualSync handles sync failure safely and resets isSyncing to false`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 5.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } throws RuntimeException("Server unreachable")
+
+        viewModel.triggerManualSync().join()
+
+        coVerify(exactly = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+        assertFalse(viewModel.isManualRefreshing.value)
+        assertFalse(viewModel.isSyncing.value)
+    }
+
+    @Test
+    fun `triggerManualSync returns immediately when master vault key is locked`() = runTest {
+        every { mockAuthRepository.getVaultKey() } returns null
+
+        viewModel.triggerManualSync().join()
+
+        coVerify(exactly = 0) { mockCrdtSyncEngine.sync(any(), any()) }
+        assertFalse(viewModel.isManualRefreshing.value)
+        assertFalse(viewModel.isSyncing.value)
+    }
+
+    @Test
+    fun `triggerManualSync ignores concurrent invocations when sync is already in flight`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 5.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } coAnswers {
+            kotlinx.coroutines.delay(5000L)
+            SyncResult(0, 0, 0, 0, 0)
+        }
+
+        val job1 = viewModel.triggerManualSync()
+        testScheduler.runCurrent()
+        assertTrue(viewModel.isSyncing.value)
+
+        val job2 = viewModel.triggerManualSync()
+        testScheduler.runCurrent()
+
+        testScheduler.advanceUntilIdle()
+        job1.join()
+        job2.join()
+
+        coVerify(exactly = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+        assertFalse(viewModel.isSyncing.value)
+    }
+
+    @Test
+    fun `triggerManualSync bounds long running sync to 2000ms timeout`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 5.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } coAnswers {
+            kotlinx.coroutines.delay(10_000L)
+            SyncResult(0, 0, 0, 0, 0)
+        }
+
+        val job = viewModel.triggerManualSync()
+        testScheduler.runCurrent()
+        assertTrue(viewModel.isSyncing.value)
+
+        // Advance 1999ms - should still be syncing
+        testScheduler.advanceTimeBy(1999L)
+        testScheduler.runCurrent()
+        assertTrue(viewModel.isSyncing.value)
+
+        // Advance past 2000ms ceiling - timeout should trigger and reset syncing state
+        testScheduler.advanceTimeBy(2L)
+        testScheduler.runCurrent()
+        job.join()
+        assertFalse(viewModel.isSyncing.value)
+    }
+
+    @Test
+    fun `logout cancels in-flight manual sync and resets isSyncing to false`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 5.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } coAnswers {
+            kotlinx.coroutines.delay(10_000L)
+            SyncResult(0, 0, 0, 0, 0)
+        }
+
+        val job = viewModel.triggerManualSync()
+        assertTrue(viewModel.isSyncing.value)
+
+        viewModel.logout()
+
+        assertTrue(job.isCancelled)
+        assertFalse(viewModel.isSyncing.value)
+        assertFalse(viewModel.isManualRefreshing.value)
+    }
+
+    @Test
+    fun `createSnapshot calls snapshotSyncManager createAndUploadSnapshot`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 6.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockSnapshotSyncManager.createAndUploadSnapshot(vaultKey, SyncNamespace.GALLERY) } returns NetworkResult.Success(1L)
+
+        viewModel.createSnapshot().join()
+
+        coVerify(exactly = 1) { mockSnapshotSyncManager.createAndUploadSnapshot(vaultKey, SyncNamespace.GALLERY) }
+    }
+
+    @Test
+    fun `90s ticker terminates cleanly when vault key is locked mid-cycle`() = runTest {
+        val vaultKey = MasterVaultKey(ByteArray(32) { 7.toByte() })
+        every { mockAuthRepository.getVaultKey() } returns vaultKey
+        coEvery { mockCrdtSyncEngine.getPendingQueueCount("gallery") } returns 2
+        coEvery { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) } returns SyncResult(0, 0, 0, 1, 2)
+
+        val contentResolver: ContentResolver = mockk(relaxed = true)
+        val uri: Uri = mockk(relaxed = true)
+        every { uri.toString() } returns "content://media/ticker_lock_test"
+        every { contentResolver.getType(uri) } returns "image/jpeg"
+
+        coEvery { mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            kotlinx.coroutines.delay(200_000L)
+            UploadResult.Success(
+                MediaAsset(
+                    fileId = "ticker-lock-file",
+                    thumbnailHash = null,
+                    mediaType = "image/jpeg",
+                    fileSize = 100L,
+                    capturedAt = 1000L
+                ),
+                isDeduplicated = false
+            )
+        }
+
+        viewModel.enqueueUploads(contentResolver, listOf(uri))
+
+        // First 90s ticker runs
+        testDispatcher.scheduler.advanceTimeBy(95_000L)
+        coVerify(atLeast = 1) { mockCrdtSyncEngine.sync(vaultKey, SyncNamespace.GALLERY) }
+
+        // Vault is locked mid-cycle
+        every { mockAuthRepository.getVaultKey() } returns null
+        every { mockAuthRepository.isLoggedIn() } returns false
+
+        // Advance another 95s
+        testDispatcher.scheduler.advanceTimeBy(95_000L)
+
+        // Sync should NOT be invoked with null/closed key
+        coVerify(exactly = 1) { mockCrdtSyncEngine.sync(any(), any()) }
+
+        testDispatcher.scheduler.advanceUntilIdle()
     }
 
     @After
