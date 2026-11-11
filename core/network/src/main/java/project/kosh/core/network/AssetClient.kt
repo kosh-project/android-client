@@ -214,6 +214,37 @@ class AssetClient @Inject constructor(
             NetworkResult.fromThrowable(e)
         }
     }
+
+    /**
+     * Downloads an encrypted binary blob directly into memory from the server CAS vault.
+     *
+     * @param hash The 64-character lowercase hex BLAKE3 content hash of the requested asset.
+     * @return [NetworkResult.Success] containing the downloaded byte array,
+     *   or [NetworkResult.Failure] if the asset cannot be retrieved.
+     */
+    suspend fun downloadBlob(
+        hash: String
+    ): NetworkResult<ByteArray> = withContext(Dispatchers.IO) {
+        val baseUrl = getBaseUrl()
+        val request = Request.Builder()
+            .url("$baseUrl/assets/$hash")
+            .get()
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@use NetworkResult.fromHttp(response.code, response.body.string())
+                }
+
+                val bytes = response.body.bytes()
+                NetworkResult.Success(bytes)
+            }
+        } catch (e: Exception) {
+            NetworkResult.fromThrowable(e)
+        }
+    }
+
     suspend fun listAssets(
         tag: AssetTag,
         limit: Int = 50,
