@@ -35,9 +35,9 @@ class GalleryGridZoomTest {
     }
 
     @Test
-    fun defaultColumns_isThree() {
-        val columns = processZoomGesture(3, emptyList())
-        assertEquals(3, columns)
+    fun defaultColumns_isFour() {
+        val columns = processZoomGesture(4, emptyList())
+        assertEquals(4, columns)
     }
 
     @Test

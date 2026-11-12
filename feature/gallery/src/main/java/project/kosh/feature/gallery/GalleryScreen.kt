@@ -37,27 +37,29 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -88,12 +90,15 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -107,14 +112,34 @@ import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import project.kosh.core.auth.PairingState
+import project.kosh.core.database.model.MediaWithCryptoDetails
 import project.kosh.core.model.ActivePairingSession
+import project.kosh.core.network.PingResult
 import project.kosh.feature.auth.QrCameraScannerDialog
 import project.kosh.feature.auth.QrCodeGenerator
 import project.kosh.feature.gallery.ui.FloatingUploadBar
 import project.kosh.feature.gallery.ui.FolderSelectionBottomSheet
 import project.kosh.feature.gallery.ui.GalleryItemTile
 import project.kosh.feature.gallery.ui.PermissionRationaleDialog
+import project.kosh.feature.gallery.ui.icons.FolderIcon
+import project.kosh.feature.gallery.ui.icons.LinkIcon
+import project.kosh.feature.gallery.ui.icons.LogoutIcon
+import project.kosh.feature.gallery.ui.icons.MoreVertIcon
+import project.kosh.feature.gallery.ui.icons.NetworkPingIcon
+import project.kosh.feature.gallery.ui.icons.SettingsIcon
+import project.kosh.feature.gallery.ui.icons.SyncIcon
+
+private data class GalleryDateGroup(
+    val key: String,
+    val title: String,
+    val items: List<MediaWithCryptoDetails>
+)
 
 /**
  * Modern Jetpack Compose screen providing media vault viewing, empty state,
@@ -124,7 +149,8 @@ import project.kosh.feature.gallery.ui.PermissionRationaleDialog
 @Composable
 fun GalleryScreen(
     viewModel: GalleryViewModel = hiltViewModel(),
-    onLogout: () -> Unit = {}
+    onLogout: () -> Unit = {},
+    onOpenServerConfig: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
@@ -145,6 +171,7 @@ fun GalleryScreen(
     val activePairingSession by viewModel.activePairingSession.collectAsState()
     val pairingSuccessMessage by viewModel.pairingSuccessMessage.collectAsState()
     val isSyncing by viewModel.isSyncing.collectAsState()
+    val isPinging by viewModel.isPinging.collectAsState()
 
     var isSessionExpired by remember(activePairingSession) { mutableStateOf(false) }
 
@@ -192,12 +219,61 @@ fun GalleryScreen(
         label = "galleryExpiredOverlayAlpha"
     )
 
-    var columnCount by remember { mutableIntStateOf(3) }
+    var columnCount by remember { mutableIntStateOf(4) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showLinkDeviceBottomSheet by remember { mutableStateOf(false) }
     var showCameraScanner by remember { mutableStateOf(false) }
     var showManualCodeEntry by remember { mutableStateOf(false) }
     var manualPairingCode by remember { mutableStateOf("") }
+
+    val gridState = rememberLazyGridState()
+    var isFabExpanded by remember { mutableStateOf(true) }
+    var prevIndex by remember { mutableIntStateOf(0) }
+    var prevScrollOffset by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(gridState) {
+        snapshotFlow { gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) ->
+                if (index == 0 && offset == 0) {
+                    isFabExpanded = true
+                    prevIndex = 0
+                    prevScrollOffset = 0
+                } else if (index > prevIndex || (index == prevIndex && offset > prevScrollOffset + 15)) {
+                    isFabExpanded = false
+                    prevIndex = index
+                    prevScrollOffset = offset
+                } else if (index < prevIndex || (index == prevIndex && offset < prevScrollOffset - 15)) {
+                    isFabExpanded = true
+                    prevIndex = index
+                    prevScrollOffset = offset
+                }
+            }
+    }
+
+    val groupedGalleryItems = remember(galleryItems) {
+        val zoneId = ZoneId.systemDefault()
+        val today = LocalDate.now(zoneId)
+        val yesterday = today.minusDays(1)
+        val sameYearFormatter = DateTimeFormatter.ofPattern("d MMM", Locale.getDefault())
+        val diffYearFormatter = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault())
+
+        val map = linkedMapOf<LocalDate, MutableList<MediaWithCryptoDetails>>()
+        for (item in galleryItems) {
+            val ts = if (item.asset.capturedAt > 0) item.asset.capturedAt else item.asset.createdAt
+            val date = Instant.ofEpochMilli(ts).atZone(zoneId).toLocalDate()
+            map.getOrPut(date) { mutableListOf() }.add(item)
+        }
+
+        map.map { (date, items) ->
+            val title = when {
+                date.isEqual(today) -> "Today"
+                date.isEqual(yesterday) -> "Yesterday"
+                date.year == today.year -> sameYearFormatter.format(date)
+                else -> diffYearFormatter.format(date)
+            }
+            GalleryDateGroup(key = date.toString(), title = title, items = items)
+        }
+    }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -292,28 +368,134 @@ fun GalleryScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.openFolderSelection() }) {
+                    var showTopMenu by remember { mutableStateOf(false) }
+
+                    IconButton(onClick = { showTopMenu = true }) {
                         Icon(
-                            imageVector = Icons.Default.FolderShared,
-                            contentDescription = "Sync Folders",
+                            imageVector = MoreVertIcon,
+                            contentDescription = "More Options",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    IconButton(onClick = {
-                        showLinkDeviceBottomSheet = true
-                        viewModel.startHostPairing()
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Link Device",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+
+                    DropdownMenu(
+                        expanded = showTopMenu,
+                        onDismissRequest = { showTopMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Media folders") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = FolderIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                viewModel.openFolderSelection()
+                            }
                         )
-                    }
-                    IconButton(onClick = { showLogoutDialog = true }) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ExitToApp,
-                            contentDescription = "Log Out",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+
+                        DropdownMenuItem(
+                            text = { Text("Link device") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = LinkIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                showLinkDeviceBottomSheet = true
+                                viewModel.startHostPairing()
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Sync vault") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = SyncIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                viewModel.triggerManualSync()
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Server settings") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = SettingsIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                onOpenServerConfig()
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = {
+                                if (isPinging) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("Pinging server...")
+                                        Spacer(Modifier.width(8.dp))
+                                        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                                    }
+                                } else {
+                                    Text("Ping server")
+                                }
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = NetworkPingIcon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            enabled = !isPinging,
+                            onClick = {
+                                showTopMenu = false
+                                viewModel.pingServer { result ->
+                                    val msg = when (result) {
+                                        is PingResult.Success -> "Server online (${result.latencyMs}ms)"
+                                        is PingResult.Failure -> "Server unreachable (${result.error})"
+                                    }
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        )
+
+                        HorizontalDivider()
+
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = "Log out",
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = LogoutIcon,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            },
+                            onClick = {
+                                showTopMenu = false
+                                showLogoutDialog = true
+                            }
                         )
                     }
                 },
@@ -324,6 +506,7 @@ fun GalleryScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
+                expanded = isFabExpanded,
                 onClick = {
                     photoPickerLauncher.launch(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
@@ -418,30 +601,32 @@ fun GalleryScreen(
             label = "galleryIndicatorScale"
         )
 
+        val executeRefresh: () -> Unit = {
+            coroutineScope.launch {
+                try {
+                    isDismissingAfterRefresh = false
+                    isManualRefreshingVisual = true
+                    val syncJob = viewModel.triggerManualSync()
+                    val startTime = System.currentTimeMillis()
+                    syncJob.join()
+                    val elapsed = System.currentTimeMillis() - startTime
+                    val minDisplayMs = 2000L
+                    if (elapsed < minDisplayMs) {
+                        delay(minDisplayMs - elapsed)
+                    }
+                    isDismissingAfterRefresh = true
+                    isManualRefreshingVisual = false
+                    pullToRefreshState.animateToHidden()
+                } finally {
+                    isDismissingAfterRefresh = false
+                    isManualRefreshingVisual = false
+                }
+            }
+        }
+
         PullToRefreshBox(
             isRefreshing = isRefreshing,
-            onRefresh = {
-                coroutineScope.launch {
-                    try {
-                        isDismissingAfterRefresh = false
-                        isManualRefreshingVisual = true
-                        val syncJob = viewModel.triggerManualSync()
-                        val startTime = System.currentTimeMillis()
-                        syncJob.join()
-                        val elapsed = System.currentTimeMillis() - startTime
-                        val minDisplayMs = 2000L
-                        if (elapsed < minDisplayMs) {
-                            delay(minDisplayMs - elapsed)
-                        }
-                        isDismissingAfterRefresh = true
-                        isManualRefreshingVisual = false
-                        pullToRefreshState.animateToHidden()
-                    } finally {
-                        isDismissingAfterRefresh = false
-                        isManualRefreshingVisual = false
-                    }
-                }
-            },
+            onRefresh = executeRefresh,
             state = pullToRefreshState,
             modifier = Modifier
                 .fillMaxSize()
@@ -567,17 +752,54 @@ fun GalleryScreen(
                 // Interactive Media Grid
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(columnCount),
+                    state = gridState,
                     contentPadding = PaddingValues(2.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.type == PointerEventType.Scroll) {
+                                        val scrollDelta = event.changes.fold(0f) { acc, c -> acc + c.scrollDelta.y }
+                                        if (scrollDelta != 0f) {
+                                            val atTop = gridState.firstVisibleItemIndex == 0 &&
+                                                    gridState.firstVisibleItemScrollOffset == 0
+                                            if (atTop && scrollDelta < 0f && !isRefreshing) {
+                                                val target = (pullToRefreshAnim.value + (-scrollDelta * 0.15f)).coerceIn(0f, 1.5f)
+                                                coroutineScope.launch {
+                                                    pullToRefreshAnim.snapTo(target)
+                                                    if (target >= 1.0f) {
+                                                        executeRefresh()
+                                                    }
+                                                }
+                                            } else if (pullToRefreshAnim.value > 0f) {
+                                                val target = (pullToRefreshAnim.value + (scrollDelta * 0.15f)).coerceIn(0f, 1.5f)
+                                                coroutineScope.launch {
+                                                    pullToRefreshAnim.snapTo(target)
+                                                }
+                                            } else {
+                                                gridState.dispatchRawDelta(scrollDelta * 64f)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .pointerInput(Unit) {
                             awaitEachGesture {
-                                awaitFirstDown(requireUnconsumed = false)
+                                val down = awaitFirstDown(requireUnconsumed = false)
                                 var accumulatedZoom = 1f
+                                var totalDragY = 0f
+                                var isDragging = false
+                                val isMouseOrUnknown = down.type == PointerType.Mouse || down.type == PointerType.Unknown
+
                                 do {
                                     val event = awaitPointerEvent()
+
+                                    // Multi-touch pinch zoom
                                     if (event.changes.size > 1) {
                                         val zoom = event.calculateZoom()
                                         accumulatedZoom *= zoom
@@ -594,31 +816,94 @@ fun GalleryScreen(
                                             accumulatedZoom = 1f
                                             event.changes.forEach { it.consume() }
                                         }
-                                    } else {
-                                        accumulatedZoom = 1f
+                                    } else if (isMouseOrUnknown && event.changes.size == 1) {
+                                        // Waydroid mouse pointer drag
+                                        val change = event.changes.first()
+                                        if (change.pressed) {
+                                            val deltaY = change.position.y - change.previousPosition.y
+                                            totalDragY += deltaY
+
+                                            if (!isDragging && kotlin.math.abs(totalDragY) > 8f) {
+                                                isDragging = true
+                                            }
+
+                                            if (isDragging) {
+                                                change.consume()
+                                                val atTop = gridState.firstVisibleItemIndex == 0 &&
+                                                        gridState.firstVisibleItemScrollOffset == 0
+                                                val isPulling = pullToRefreshAnim.value > 0f || (atTop && deltaY > 0)
+
+                                                if (isPulling && !isRefreshing) {
+                                                    val target = (pullToRefreshAnim.value + deltaY / 300f).coerceIn(0f, 1.5f)
+                                                    coroutineScope.launch {
+                                                        pullToRefreshAnim.snapTo(target)
+                                                    }
+                                                } else {
+                                                    gridState.dispatchRawDelta(-deltaY)
+                                                }
+                                            }
+                                        }
                                     }
                                 } while (event.changes.any { it.pressed })
+
+                                if (isMouseOrUnknown && isDragging) {
+                                    val currentFraction = pullToRefreshAnim.value
+                                    if (currentFraction >= 1.0f && !isRefreshing) {
+                                        executeRefresh()
+                                    } else if (currentFraction > 0f) {
+                                        coroutineScope.launch {
+                                            pullToRefreshAnim.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                                                    stiffness = Spring.StiffnessMediumLow
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                 ) {
-                    items(galleryItems, key = { it.asset.fileId }) { item ->
-                        var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf<Bitmap?>(null) }
-
-                        LaunchedEffect(item.asset.fileId) {
-                            thumbnailBitmap = viewModel.loadThumbnail(item)
+                    groupedGalleryItems.forEach { group ->
+                        item(
+                            key = "header_${group.key}",
+                            span = { GridItemSpan(maxLineSpan) }
+                        ) {
+                            Text(
+                                text = group.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 12.dp, end = 12.dp, top = 20.dp, bottom = 6.dp)
+                            )
                         }
 
-                        val uploadStage = activeUploadStages[item.asset.fileId]
+                        items(group.items, key = { it.asset.fileId }) { item ->
+                            var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf<Bitmap?>(null) }
+                            var isLoadingThumbnail by remember(item.asset.fileId) { mutableStateOf(true) }
 
-                        GalleryItemTile(
-                            item = item,
-                            thumbnail = thumbnailBitmap,
-                            uploadStage = uploadStage,
-                            onClick = {
-                                // Fullscreen viewer deferred to next iteration
-                            },
-                            modifier = Modifier.animateItem()
-                        )
+                            LaunchedEffect(item.asset.fileId, item.cryptoMapping?.thumbnailCiphertextHash, item.asset.thumbnailHash) {
+                                isLoadingThumbnail = true
+                                thumbnailBitmap = viewModel.loadThumbnail(item)
+                                isLoadingThumbnail = false
+                            }
+
+                            val uploadStage = activeUploadStages[item.asset.fileId]
+
+                            GalleryItemTile(
+                                item = item,
+                                thumbnail = thumbnailBitmap,
+                                isLoading = isLoadingThumbnail,
+                                uploadStage = uploadStage,
+                                onClick = {
+                                    // Fullscreen viewer deferred to next iteration
+                                },
+                                modifier = Modifier.animateItem()
+                            )
+                        }
                     }
                 }
             }
@@ -720,7 +1005,7 @@ fun GalleryScreen(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            imageVector = Icons.Default.Share,
+                            imageVector = LinkIcon,
                             contentDescription = "Link Device",
                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                             modifier = Modifier.size(28.dp)

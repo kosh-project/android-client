@@ -46,6 +46,9 @@ import project.kosh.core.model.UploadStage
 import project.kosh.core.model.UploadStatus
 import project.kosh.feature.gallery.sync.SnapshotWorkManagerScheduler
 import project.kosh.core.network.AssetClient
+import project.kosh.core.network.PingResult
+import project.kosh.core.network.ServerConfigurationStore
+import project.kosh.core.network.ServerHealthPinger
 import project.kosh.feature.gallery.loader.EncryptedThumbnailLoader
 import project.kosh.feature.gallery.model.BatchUploadState
 import project.kosh.feature.gallery.model.DiscoveredMediaItem
@@ -111,10 +114,39 @@ class GalleryViewModel @Inject constructor(
     private val crdtSyncEngine: CrdtSyncEngine,
     private val snapshotSyncManager: SnapshotSyncManager,
     private val mediaAssetDao: MediaAssetDao,
-    private val snapshotScheduler: SnapshotWorkManagerScheduler
+    private val snapshotScheduler: SnapshotWorkManagerScheduler,
+    private val serverHealthPinger: ServerHealthPinger? = null,
+    private val serverConfigStore: ServerConfigurationStore? = null
 ) : ViewModel() {
 
     internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+
+    private val _pingResult = MutableStateFlow<PingResult?>(null)
+    val pingResult: StateFlow<PingResult?> = _pingResult.asStateFlow()
+
+    private val _isPinging = MutableStateFlow(false)
+    val isPinging: StateFlow<Boolean> = _isPinging.asStateFlow()
+
+    fun pingServer(onResult: ((PingResult) -> Unit)? = null) {
+        val pinger = serverHealthPinger
+        val store = serverConfigStore
+        if (pinger == null || store == null) {
+            val failure = PingResult.Failure("Pinger not initialized", false)
+            _pingResult.value = failure
+            onResult?.invoke(failure)
+            return
+        }
+        viewModelScope.launch(ioDispatcher) {
+            _isPinging.value = true
+            val config = store.getServerConfig()
+            val result = pinger.ping(config.host, config.port, config.useTls)
+            _pingResult.value = result
+            _isPinging.value = false
+            withContext(Dispatchers.Main) {
+                onResult?.invoke(result)
+            }
+        }
+    }
 
     // In-flight upload items keyed by assigned vault fileId
     private val _inFlightUploads = MutableStateFlow<Map<String, InFlightUploadItem>>(emptyMap())
@@ -550,7 +582,7 @@ class GalleryViewModel @Inject constructor(
                 val payload = json.decodeFromString<PairingQrPayload>(qrJson)
                 val rxPubKey = payload.publicKeyHex.orEmpty()
                 _pairingState.value = PairingState.AwaitingFulfillment
-                val result = if (rxPubKey.isNotBlank()) {
+                var effectiveResult = if (rxPubKey.isNotBlank()) {
                     devicePairingManager.fulfillSenderSession(
                         mailboxId = payload.mailboxId,
                         receiverPublicKeyHex = rxPubKey,
@@ -562,13 +594,52 @@ class GalleryViewModel @Inject constructor(
                         token = payload.token
                     )
                 }
-                when (result) {
+
+                // Fallback: if not found on current server and an alternate host is present in the QR code, retry with QR server
+                val payloadHost = payload.host
+                val store = serverConfigStore
+                if (effectiveResult is NetworkResult.Failure && !payloadHost.isNullOrBlank() && store != null) {
+                    val current = store.getServerConfig()
+                    if (payloadHost != current.host || (payload.port != null && payload.port != current.port)) {
+                        val fingerprintBytes = payload.fingerprint?.let {
+                            ServerConfigurationStore.parseFingerprint(it)
+                        } ?: current.pinnedCertFingerprintSha256
+                        store.updateServer(
+                            host = payloadHost,
+                            port = payload.port ?: 23342,
+                            useTls = payload.fingerprint != null || store.isTlsEnabled(),
+                            pinnedCertFingerprintSha256 = fingerprintBytes
+                        )
+                        effectiveResult = if (rxPubKey.isNotBlank()) {
+                            devicePairingManager.fulfillSenderSession(
+                                mailboxId = payload.mailboxId,
+                                receiverPublicKeyHex = rxPubKey,
+                                token = payload.token
+                            )
+                        } else {
+                            devicePairingManager.fulfillSenderWithCode(
+                                mailboxId = payload.mailboxId,
+                                token = payload.token
+                            )
+                        }
+                        if (effectiveResult is NetworkResult.Failure) {
+                            store.updateServer(
+                                host = current.host,
+                                port = current.port,
+                                useTls = current.useTls,
+                                pinnedCertFingerprintSha256 = current.pinnedCertFingerprintSha256
+                            )
+                        }
+                    }
+                }
+
+                when (effectiveResult) {
                     is NetworkResult.Success -> {
                         _pairingSuccessMessage.value = "Device successfully linked!"
                         _pairingState.value = null
                     }
                     is NetworkResult.Failure -> {
-                        _pairingState.value = PairingState.Error("Failed to link device: ${result.userMessage}")
+                        _pairingState.value = PairingState.Error("Failed to link device: ${effectiveResult.userMessage}")
                     }
                 }
             } catch (e: Exception) {
