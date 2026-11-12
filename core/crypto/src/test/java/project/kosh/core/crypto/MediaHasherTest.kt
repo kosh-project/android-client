@@ -34,4 +34,12 @@ class MediaHasherTest {
         val streamHash = MediaHasher.computeSha256(ByteArrayInputStream(large))
         assertEquals(byteHash, streamHash)
     }
+
+    @Test
+    fun computeSha256WithLength_returnsCorrectDigestAndExactByteCount() {
+        val testData = "Streaming SHA-256 length check".toByteArray(Charsets.UTF_8)
+        val (digest, bytesRead) = MediaHasher.computeSha256WithLength(ByteArrayInputStream(testData))
+        assertEquals(testData.size.toLong(), bytesRead)
+        assertEquals(MediaHasher.computeSha256(testData), digest)
+    }
 }

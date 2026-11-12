@@ -83,6 +83,55 @@ object AesGcmEnvelope {
     }
 
     /**
+     * Streams encryption of [inputStream] into [outputStream] via AES-256-GCM.
+     * Wire format: [12-byte IV][ciphertext + 16-byte GCM tag]
+     *
+     * Streams in chunks of [bufferSize] bytes (default 64 KiB), avoiding full-file heap allocations.
+     *
+     * @return Total number of bytes written to [outputStream] (IV + ciphertext + tag).
+     */
+    fun encryptStream(
+        inputStream: java.io.InputStream,
+        outputStream: java.io.OutputStream,
+        key: ByteArray,
+        random: SecureRandom = SecureRandom(),
+        bufferSize: Int = 64 * 1024,
+        onProgress: ((bytesRead: Long) -> Unit)? = null
+    ): Long {
+        require(key.size == KEY_SIZE_BYTES) { "Key must be exactly $KEY_SIZE_BYTES bytes" }
+
+        val iv = ByteArray(IV_SIZE_BYTES)
+        random.nextBytes(iv)
+        outputStream.write(iv)
+
+        val cipher = Cipher.getInstance(ALGORITHM)
+        val keySpec = SecretKeySpec(key, "AES")
+        val gcmSpec = GCMParameterSpec(TAG_SIZE_BITS, iv)
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec)
+
+        val buffer = ByteArray(bufferSize)
+        var bytesRead: Int
+        var totalRead = 0L
+
+        while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+            val updateBytes = cipher.update(buffer, 0, bytesRead)
+            if (updateBytes != null && updateBytes.isNotEmpty()) {
+                outputStream.write(updateBytes)
+            }
+            totalRead += bytesRead
+            onProgress?.invoke(totalRead)
+        }
+
+        val finalBytes = cipher.doFinal()
+        if (finalBytes != null && finalBytes.isNotEmpty()) {
+            outputStream.write(finalBytes)
+        }
+        outputStream.flush()
+
+        return IV_SIZE_BYTES + totalRead + TAG_SIZE_BYTES
+    }
+
+    /**
      * Encrypts arbitrary [plaintext] bytes with [key] (32 bytes) via AES-256-GCM.
      * Wire format: [12-byte IV][ciphertext + 16-byte GCM tag]
      */

@@ -57,4 +57,52 @@ class AesGcmEnvelopeTest {
             AesGcmEnvelope.unwrap(tamperedHex, kek)
         }
     }
+
+    @Test
+    fun encryptStream_producesValidEnvelopeDecryptableByStandardDecrypt() {
+        val dek = ByteArray(32) { (it * 7).toByte() }
+        val testData = ByteArray(150 * 1024) { (it % 251).toByte() }
+
+        val inputStream = java.io.ByteArrayInputStream(testData)
+        val outputStream = java.io.ByteArrayOutputStream()
+
+        val progressReports = mutableListOf<Long>()
+        val totalWritten = AesGcmEnvelope.encryptStream(
+            inputStream = inputStream,
+            outputStream = outputStream,
+            key = dek,
+            bufferSize = 32 * 1024,
+            onProgress = { progressReports.add(it) }
+        )
+
+        val encryptedBytes = outputStream.toByteArray()
+        assertEquals(totalWritten, encryptedBytes.size.toLong())
+        assertEquals((testData.size + AesGcmEnvelope.IV_SIZE_BYTES + AesGcmEnvelope.TAG_SIZE_BYTES).toLong(), totalWritten)
+
+        // Decrypt using standard decrypt and verify match
+        val decrypted = AesGcmEnvelope.decrypt(encryptedBytes, dek)
+        assertArrayEquals(testData, decrypted)
+
+        // Verify progress callbacks fired
+        assert(progressReports.isNotEmpty())
+        assertEquals(testData.size.toLong(), progressReports.last())
+    }
+
+    @Test
+    fun encryptStream_emptyStream_producesValidEnvelope() {
+        val dek = ByteArray(32) { 5 }
+        val inputStream = java.io.ByteArrayInputStream(ByteArray(0))
+        val outputStream = java.io.ByteArrayOutputStream()
+
+        val totalWritten = AesGcmEnvelope.encryptStream(
+            inputStream = inputStream,
+            outputStream = outputStream,
+            key = dek
+        )
+
+        assertEquals((AesGcmEnvelope.IV_SIZE_BYTES + AesGcmEnvelope.TAG_SIZE_BYTES).toLong(), totalWritten)
+        val decrypted = AesGcmEnvelope.decrypt(outputStream.toByteArray(), dek)
+        assertEquals(0, decrypted.size)
+    }
 }
+
