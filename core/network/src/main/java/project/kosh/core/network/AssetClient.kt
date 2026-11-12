@@ -95,6 +95,58 @@ class AssetClient @Inject constructor(
     }
 
     /**
+     * Uploads media directly from an Android content [Uri] to the server CAS vault,
+     * encrypting with [dek] on the fly in 64 KiB chunks via [StreamingEncryptedRequestBody].
+     *
+     * Declares exact Content-Length up front (`plaintextSize + 28L`) and reports real-time
+     * byte upload progress to [onProgress].
+     */
+    suspend fun uploadEncryptedUri(
+        contentResolver: ContentResolver,
+        uri: Uri,
+        tag: AssetTag,
+        originalFileName: String,
+        dek: ByteArray,
+        plaintextSize: Long,
+        onProgress: ((bytesWritten: Long, totalBytes: Long) -> Unit)? = null
+    ): NetworkResult<String> = withContext(Dispatchers.IO) {
+        val baseUrl = getBaseUrl()
+        val streamingBody = StreamingEncryptedRequestBody.fromUri(
+            contentResolver = contentResolver,
+            uri = uri,
+            dek = dek,
+            plaintextSize = plaintextSize
+        )
+        val requestBody = if (onProgress != null) ProgressRequestBody(streamingBody, onProgress) else streamingBody
+
+        val request = Request.Builder()
+            .url("$baseUrl/upload/${tag.id}")
+            .addHeader("X-File-Name", originalFileName)
+            .post(requestBody)
+            .build()
+
+        try {
+            client.newCall(request).execute().use { response ->
+                val bodyText = response.body.string()
+                if (!response.isSuccessful) {
+                    return@use NetworkResult.fromHttp(response.code, bodyText)
+                }
+
+                val uploadResponse = json.decodeFromString<UploadResponse>(bodyText)
+                val hash = uploadResponse.hash
+
+                if (!uploadResponse.isSuccess || hash == null) {
+                    return@use NetworkResult.fromHttp(500, bodyText)
+                }
+
+                NetworkResult.Success(hash)
+            }
+        } catch (e: Exception) {
+            NetworkResult.fromThrowable(e)
+        }
+    }
+
+    /**
      * Uploads in-memory encrypted bytes directly to the server CAS vault.
      */
     suspend fun uploadBytes(
