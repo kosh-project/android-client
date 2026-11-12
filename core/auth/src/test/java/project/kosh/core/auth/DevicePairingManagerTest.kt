@@ -299,7 +299,7 @@ class DevicePairingManagerTest {
     }
 
     @Test
-    fun `startJoinFlow pins TLS certificate when fingerprint provided`() = runBlocking {
+    fun `startJoinFlow pins TLS certificate when fallback to QR server is needed`() = runBlocking {
         val masterKey = MasterVaultKey.generate()
         val dummyFingerprint = "aa".repeat(32)
 
@@ -309,7 +309,8 @@ class DevicePairingManagerTest {
         coEvery { hashcashSolver.solve(any(), any()) } returns "join_pow_header"
         coEvery {
             mailboxClient.joinMailbox(any(), any(), any())
-        } returns NetworkResult.Success(MailboxJoinResponse("join_polling_token"))
+        } returns NetworkResult.Http.NotFound("mailbox", "Mailbox not found on current server") andThen
+          NetworkResult.Success(MailboxJoinResponse("join_polling_token"))
 
         coEvery {
             mailboxClient.pollPickup(any(), any(), any(), any())
@@ -331,6 +332,45 @@ class DevicePairingManagerTest {
                 host = "192.168.1.150",
                 port = 23342,
                 useTls = true,
+                pinnedCertFingerprintSha256 = any()
+            )
+        }
+        masterKey.close()
+    }
+
+    @Test
+    fun `startJoinFlow keeps current server when mailbox found on current server`() = runBlocking {
+        val masterKey = MasterVaultKey.generate()
+        val dummyFingerprint = "aa".repeat(32)
+
+        coEvery { authClient.fetchChallenge("register") } returns NetworkResult.Success(
+            ChallengeResponse("join_challenge")
+        )
+        coEvery { hashcashSolver.solve(any(), any()) } returns "join_pow_header"
+        coEvery {
+            mailboxClient.joinMailbox(any(), any(), any())
+        } returns NetworkResult.Success(MailboxJoinResponse("join_polling_token"))
+
+        coEvery {
+            mailboxClient.pollPickup(any(), any(), any(), any())
+        } answers {
+            val rxPubKey = ByteArray(32) { 0x01 }
+            val payload = EcdhPairingCrypto.encryptCompoundPayload(testTicket, masterKey, rxPubKey)
+            flowOf(MailboxPollState.Fulfilled(payload))
+        }
+
+        devicePairingManager.startJoinFlow(
+            mailboxId = "k8n2p4x9",
+            host = "127.0.0.1",
+            port = 23342,
+            fingerprint = dummyFingerprint
+        ).toList()
+
+        coVerify(exactly = 0) {
+            serverConfigStore.updateServer(
+                host = "127.0.0.1",
+                port = any(),
+                useTls = any(),
                 pinnedCertFingerprintSha256 = any()
             )
         }

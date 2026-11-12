@@ -23,6 +23,10 @@ class ProgressRequestBody(
 
     override fun contentLength(): Long = delegate.contentLength()
 
+    override fun isOneShot(): Boolean = delegate.isOneShot()
+
+    override fun isDuplex(): Boolean = delegate.isDuplex()
+
     override fun writeTo(sink: BufferedSink) {
         val total = contentLength()
         val countingSink = object : ForwardingSink(sink) {

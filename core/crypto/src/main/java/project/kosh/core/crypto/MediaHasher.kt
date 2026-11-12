@@ -13,16 +13,33 @@ object MediaHasher {
     const val BUFFER_SIZE = 64 * 1024 // 64 KiB buffer
 
     /**
-     * Computes lowercase hex SHA-256 over an [InputStream].
+     * Computes lowercase hex SHA-256 over an [InputStream] with optional progress reporting.
      */
-    fun computeSha256(inputStream: InputStream): String {
+    fun computeSha256(
+        inputStream: InputStream,
+        totalBytes: Long = -1L,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null
+    ): String = computeSha256WithLength(inputStream, totalBytes, onProgress).first
+
+    /**
+     * Computes lowercase hex SHA-256 over an [InputStream] with optional progress reporting,
+     * returning both the hex digest and the exact number of bytes read.
+     */
+    fun computeSha256WithLength(
+        inputStream: InputStream,
+        totalBytes: Long = -1L,
+        onProgress: ((bytesRead: Long, totalBytes: Long) -> Unit)? = null
+    ): Pair<String, Long> {
         val digest = MessageDigest.getInstance("SHA-256")
         val buffer = ByteArray(BUFFER_SIZE)
         var bytesRead: Int
+        var totalRead = 0L
         while (inputStream.read(buffer).also { bytesRead = it } != -1) {
             digest.update(buffer, 0, bytesRead)
+            totalRead += bytesRead
+            onProgress?.invoke(totalRead, totalBytes)
         }
-        return bytesToHex(digest.digest())
+        return Pair(bytesToHex(digest.digest()), totalRead)
     }
 
     /**

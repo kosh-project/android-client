@@ -11,25 +11,50 @@ data class BatchUploadState(
     val currentItemIndex: Int = 0,
     val currentFileName: String? = null,
     val currentStage: UploadStage? = null,
-    val isUploading: Boolean = false
+    val isUploading: Boolean = false,
+    val totalBatchBytes: Long = 0L,
+    val completedBatchBytes: Long = 0L,
+    val currentItemBytesSent: Long = 0L
 ) {
     /**
      * Continuous 0.0 to 1.0 fraction representing aggregate batch completion.
      */
     val overallProgress: Float
-        get() = if (totalItems > 0) {
-            val itemWeight = 1f / totalItems
-            val baseProgress = completedItems.toFloat() / totalItems
-            val currentItemPart = when (val s = currentStage) {
-                is UploadStage.Hashing -> s.progress * 0.3f
-                is UploadStage.GeneratingThumbnail -> 0.35f
-                is UploadStage.Encrypting -> 0.40f
-                is UploadStage.Uploading -> 0.40f + (s.progress * 0.55f)
-                is UploadStage.Finalizing -> 0.98f
-                else -> 0f
+        get() {
+            if (totalBatchBytes > 0L) {
+                val sentInCurrent = when (val s = currentStage) {
+                    is UploadStage.Uploading -> {
+                        if (s.totalBytes > 0L) minOf(s.bytesSent, s.totalBytes) else s.bytesSent
+                    }
+                    is UploadStage.Finalizing -> {
+                        if (currentItemBytesSent > 0L) {
+                            currentItemBytesSent
+                        } else if (totalItems == 1) {
+                            totalBatchBytes - completedBatchBytes
+                        } else {
+                            0L
+                        }
+                    }
+                    else -> currentItemBytesSent
+                }
+                val bytesProcessed = (completedBatchBytes + sentInCurrent).coerceAtLeast(0L)
+                return (bytesProcessed.toDouble() / totalBatchBytes.toDouble()).toFloat().coerceIn(0f, 1f)
             }
-            (baseProgress + currentItemPart * itemWeight).coerceIn(0f, 1f)
-        } else 0f
+            if (totalItems > 0) {
+                val itemWeight = 1f / totalItems
+                val baseProgress = completedItems.toFloat() / totalItems
+                val currentItemPart = when (val s = currentStage) {
+                    is UploadStage.Hashing -> s.progress * 0.3f
+                    is UploadStage.GeneratingThumbnail -> 0.35f
+                    is UploadStage.Encrypting -> 0.40f
+                    is UploadStage.Uploading -> 0.40f + (s.progress * 0.55f)
+                    is UploadStage.Finalizing -> 0.98f
+                    else -> 0f
+                }
+                return (baseProgress + currentItemPart * itemWeight).coerceIn(0f, 1f)
+            }
+            return 0f
+        }
 
     /**
      * User-facing text describing the active pipeline operation.

@@ -463,6 +463,70 @@ class GalleryViewModelTest {
     }
 
     @Test
+    fun `enqueueUploads updates batchUploadState when upload encounters error`() = runTest {
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val mockUri: Uri = mockk(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(
+                contentResolver = any(),
+                uri = any(),
+                masterVaultKey = any(),
+                mediaType = any(),
+                originalFileName = any(),
+                customFileId = any(),
+                customCapturedAt = any(),
+                onProgress = any()
+            )
+        } returns UploadResult.Error("Network reset")
+
+        viewModel.enqueueUploads(mockResolver, listOf(mockUri))
+        testScheduler.advanceUntilIdle()
+
+        val finalUploadState = viewModel.uploadState.value
+        assertTrue(finalUploadState is UploadUiState.Error)
+        assertEquals("Network reset", (finalUploadState as UploadUiState.Error).message)
+    }
+
+    @Test
+    fun `enqueueUploads maintains progress during Finalizing stage`() = runTest {
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val mockUri: Uri = mockk(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        val testAsset = MediaAsset(fileId = "fin-file-id", mediaType = "image/jpeg", fileSize = 5000L, capturedAt = 1000L)
+
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+        var capturedFinalizingProgress = -1f
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(
+                contentResolver = any(),
+                uri = any(),
+                masterVaultKey = any(),
+                mediaType = any(),
+                originalFileName = any(),
+                customFileId = any(),
+                customCapturedAt = any(),
+                onProgress = any()
+            )
+        } answers {
+            val progressCallback = arg<((project.kosh.core.model.UploadStage) -> Unit)?>(7)
+            progressCallback?.invoke(project.kosh.core.model.UploadStage.Uploading(1.0f, 5000L, 5000L, 10000L))
+            progressCallback?.invoke(project.kosh.core.model.UploadStage.Finalizing)
+            capturedFinalizingProgress = viewModel.batchUploadState.value.overallProgress
+            UploadResult.Success(testAsset, false)
+        }
+
+        viewModel.enqueueUploads(mockResolver, listOf(mockUri))
+        testScheduler.advanceUntilIdle()
+
+        // When totalBatchBytes is 0 (mock resolver returns 0 size), fallback gives 0.98f for Finalizing
+        assertTrue(capturedFinalizingProgress >= 0.95f)
+    }
+
+    @Test
     fun `InFlightUploadItem preserves metadata and maps correctly to MediaWithCryptoDetails`() {
         val mockResolver: ContentResolver = mockk(relaxed = true)
         val mockUri: Uri = mockk(relaxed = true)

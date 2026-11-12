@@ -48,7 +48,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.HourglassBottom
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.core.content.ContextCompat
@@ -57,6 +56,7 @@ import project.kosh.core.crypto.Bip39Sas
 import project.kosh.core.auth.PairingState
 import project.kosh.core.model.ActivePairingSession
 import project.kosh.feature.auth.QrCodeGenerator
+import project.kosh.feature.auth.ui.icons.LinkIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -467,7 +467,7 @@ fun AuthScreen(
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
                                         Icon(
-                                            imageVector = if (isVaultUnlockIntent) Icons.Default.Lock else Icons.Default.Share,
+                                            imageVector = if (isVaultUnlockIntent) Icons.Default.Lock else LinkIcon,
                                             contentDescription = if (isVaultUnlockIntent) "Retrieve Vault Key" else "Link Device",
                                             tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                             modifier = Modifier.size(24.dp)
@@ -755,7 +755,7 @@ fun AuthScreen(
                                     shape = RoundedCornerShape(24.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Share,
+                                        imageVector = LinkIcon,
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -1159,7 +1159,7 @@ fun AuthScreen(
                                     shape = RoundedCornerShape(25.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Share,
+                                        imageVector = LinkIcon,
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp)
                                     )
@@ -1204,7 +1204,7 @@ fun AuthScreen(
                                     shape = RoundedCornerShape(25.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Share,
+                                        imageVector = LinkIcon,
                                         contentDescription = null,
                                         modifier = Modifier.size(20.dp)
                                     )

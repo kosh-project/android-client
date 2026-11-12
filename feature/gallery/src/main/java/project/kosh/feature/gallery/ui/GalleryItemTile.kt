@@ -17,9 +17,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,7 +62,8 @@ fun GalleryItemTile(
     thumbnail: Bitmap?,
     uploadStage: UploadStage?,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isLoading: Boolean = false
 ) {
     var showCompletedFlash by remember { mutableStateOf(false) }
 
@@ -76,13 +80,15 @@ fun GalleryItemTile(
         }
     }
 
+    val isVideo = item.asset.mediaType.startsWith("video/", ignoreCase = true)
+
     Box(
         modifier = modifier
             .aspectRatio(1f)
             .clip(RoundedCornerShape(4.dp))
             .clickable(onClick = onClick)
     ) {
-        // Base: Decoded Thumbnail or Shimmer Placeholder
+        // Base: Decoded Thumbnail or Shimmer Placeholder / Static Fallback
         if (thumbnail != null) {
             Image(
                 bitmap = thumbnail.asImageBitmap(),
@@ -90,17 +96,52 @@ fun GalleryItemTile(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
-        } else {
+            if (isVideo) {
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = Color.Black.copy(alpha = 0.6f),
+                    modifier = Modifier
+                        .padding(6.dp)
+                        .align(Alignment.BottomStart)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Video",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+        } else if (isLoading) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
             ) {
                 CircularProgressIndicator(
                     strokeWidth = 2.dp,
-                    modifier = Modifier
-                        .size(24.dp)
-                        .align(Alignment.Center)
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        } else {
+            // Not loading and thumbnail is null: render quiet placeholder instead of infinite spinner
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (isVideo) Icons.Default.PlayArrow else Icons.Default.Image,
+                    contentDescription = if (isVideo) "Video" else "Image",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.size(28.dp)
                 )
             }
         }

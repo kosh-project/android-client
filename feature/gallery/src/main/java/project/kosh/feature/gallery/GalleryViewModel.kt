@@ -46,6 +46,9 @@ import project.kosh.core.model.UploadStage
 import project.kosh.core.model.UploadStatus
 import project.kosh.feature.gallery.sync.SnapshotWorkManagerScheduler
 import project.kosh.core.network.AssetClient
+import project.kosh.core.network.PingResult
+import project.kosh.core.network.ServerConfigurationStore
+import project.kosh.core.network.ServerHealthPinger
 import project.kosh.feature.gallery.loader.EncryptedThumbnailLoader
 import project.kosh.feature.gallery.model.BatchUploadState
 import project.kosh.feature.gallery.model.DiscoveredMediaItem
@@ -111,10 +114,39 @@ class GalleryViewModel @Inject constructor(
     private val crdtSyncEngine: CrdtSyncEngine,
     private val snapshotSyncManager: SnapshotSyncManager,
     private val mediaAssetDao: MediaAssetDao,
-    private val snapshotScheduler: SnapshotWorkManagerScheduler
+    private val snapshotScheduler: SnapshotWorkManagerScheduler,
+    private val serverHealthPinger: ServerHealthPinger? = null,
+    private val serverConfigStore: ServerConfigurationStore? = null
 ) : ViewModel() {
 
     internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+
+    private val _pingResult = MutableStateFlow<PingResult?>(null)
+    val pingResult: StateFlow<PingResult?> = _pingResult.asStateFlow()
+
+    private val _isPinging = MutableStateFlow(false)
+    val isPinging: StateFlow<Boolean> = _isPinging.asStateFlow()
+
+    fun pingServer(onResult: ((PingResult) -> Unit)? = null) {
+        val pinger = serverHealthPinger
+        val store = serverConfigStore
+        if (pinger == null || store == null) {
+            val failure = PingResult.Failure("Pinger not initialized", false)
+            _pingResult.value = failure
+            onResult?.invoke(failure)
+            return
+        }
+        viewModelScope.launch(ioDispatcher) {
+            _isPinging.value = true
+            val config = store.getServerConfig()
+            val result = pinger.ping(config.host, config.port, config.useTls)
+            _pingResult.value = result
+            _isPinging.value = false
+            withContext(Dispatchers.Main) {
+                onResult?.invoke(result)
+            }
+        }
+    }
 
     // In-flight upload items keyed by assigned vault fileId
     private val _inFlightUploads = MutableStateFlow<Map<String, InFlightUploadItem>>(emptyMap())
@@ -198,6 +230,8 @@ class GalleryViewModel @Inject constructor(
     private var uploadWorkerJob: Job? = null
     private var totalBatchCount = 0
     private var completedBatchCount = 0
+    private var totalBatchBytes = 0L
+    private var completedBatchBytes = 0L
 
     init {
         // Check first-time folder setup
@@ -239,10 +273,14 @@ class GalleryViewModel @Inject constructor(
                 newTasksMap[fileId] = task
             }
 
+            val addedBytes = newTasks.sumOf { it.fileSize }
             totalBatchCount += uniqueUris.size
+            totalBatchBytes += addedBytes
             _batchUploadState.value = _batchUploadState.value.copy(
                 totalItems = totalBatchCount,
                 completedItems = completedBatchCount,
+                totalBatchBytes = totalBatchBytes,
+                completedBatchBytes = completedBatchBytes,
                 isUploading = true
             )
 
@@ -318,10 +356,15 @@ class GalleryViewModel @Inject constructor(
                         isUploading = false,
                         totalItems = 0,
                         completedItems = 0,
+                        totalBatchBytes = 0L,
+                        completedBatchBytes = 0L,
+                        currentItemBytesSent = 0L,
                         currentStage = UploadStage.Completed
                     )
                     totalBatchCount = 0
                     completedBatchCount = 0
+                    totalBatchBytes = 0L
+                    completedBatchBytes = 0L
                 }
             }
         }
@@ -332,7 +375,14 @@ class GalleryViewModel @Inject constructor(
 
         if (masterKey == null) {
             completedBatchCount++
+            completedBatchBytes += task.fileSize
             val errorStage = UploadStage.Failed("Master Vault Key locked. Please sign in.")
+            _batchUploadState.value = _batchUploadState.value.copy(
+                completedItems = completedBatchCount,
+                completedBatchBytes = completedBatchBytes,
+                currentItemBytesSent = 0L,
+                currentStage = errorStage
+            )
             _activeUploadStages.value = _activeUploadStages.value + (task.fileId to errorStage) + (task.uri.toString() to errorStage)
             _uploadState.value = UploadUiState.Error("Master Vault Key locked")
             delay(1200L)
@@ -349,7 +399,10 @@ class GalleryViewModel @Inject constructor(
         _batchUploadState.value = _batchUploadState.value.copy(
             currentItemIndex = currentIndex,
             currentFileName = task.fileName,
-            currentStage = UploadStage.Hashing(0f)
+            currentStage = UploadStage.Hashing(0f),
+            totalBatchBytes = totalBatchBytes,
+            completedBatchBytes = completedBatchBytes,
+            currentItemBytesSent = 0L
         )
         _uploadState.value = UploadUiState.Uploading(task.fileName)
 
@@ -366,8 +419,22 @@ class GalleryViewModel @Inject constructor(
             customCapturedAt = task.dateModified,
             onProgress = { stage ->
                 _activeUploadStages.value = _activeUploadStages.value + (task.fileId to stage) + (task.uri.toString() to stage)
+                val sent = when (stage) {
+                    is UploadStage.Uploading -> {
+                        if (task.fileSize > 0L && stage.totalBytes > 0L) {
+                            minOf(task.fileSize, (stage.progress * task.fileSize).toLong())
+                        } else {
+                            stage.bytesSent
+                        }
+                    }
+                    is UploadStage.Finalizing, is UploadStage.Completed -> {
+                        if (task.fileSize > 0L) task.fileSize else _batchUploadState.value.currentItemBytesSent
+                    }
+                    else -> 0L
+                }
                 _batchUploadState.value = _batchUploadState.value.copy(
-                    currentStage = stage
+                    currentStage = stage,
+                    currentItemBytesSent = sent
                 )
             }
         )
@@ -375,9 +442,17 @@ class GalleryViewModel @Inject constructor(
         when (result) {
             is UploadResult.Success -> {
                 completedBatchCount++
+                val actualSize = if (task.fileSize > 0L) task.fileSize else result.asset.fileSize
+                if (task.fileSize <= 0L && actualSize > 0L) {
+                    totalBatchBytes += actualSize
+                }
+                completedBatchBytes += actualSize
                 val resolvedFileId = result.asset.fileId
                 _batchUploadState.value = _batchUploadState.value.copy(
                     completedItems = completedBatchCount,
+                    totalBatchBytes = totalBatchBytes,
+                    completedBatchBytes = completedBatchBytes,
+                    currentItemBytesSent = 0L,
                     currentStage = UploadStage.Completed
                 )
                 _activeUploadStages.value = _activeUploadStages.value + (task.fileId to UploadStage.Completed) + (resolvedFileId to UploadStage.Completed) + (task.uri.toString() to UploadStage.Completed)
@@ -390,7 +465,14 @@ class GalleryViewModel @Inject constructor(
             }
             is UploadResult.Error -> {
                 completedBatchCount++
+                completedBatchBytes += task.fileSize
                 val errorStage = UploadStage.Failed(result.message)
+                _batchUploadState.value = _batchUploadState.value.copy(
+                    completedItems = completedBatchCount,
+                    completedBatchBytes = completedBatchBytes,
+                    currentItemBytesSent = 0L,
+                    currentStage = errorStage
+                )
                 _activeUploadStages.value = _activeUploadStages.value + (task.fileId to errorStage) + (task.uri.toString() to errorStage)
                 _uploadState.value = UploadUiState.Error(result.message)
                 delay(1200L)
@@ -505,7 +587,18 @@ class GalleryViewModel @Inject constructor(
     }
 
     fun dismissBatchBar() {
-        _batchUploadState.value = _batchUploadState.value.copy(isUploading = false)
+        _batchUploadState.value = _batchUploadState.value.copy(
+            isUploading = false,
+            totalItems = 0,
+            completedItems = 0,
+            totalBatchBytes = 0L,
+            completedBatchBytes = 0L,
+            currentItemBytesSent = 0L
+        )
+        totalBatchCount = 0
+        completedBatchCount = 0
+        totalBatchBytes = 0L
+        completedBatchBytes = 0L
     }
 
     fun dismissUploadState() {
@@ -550,7 +643,7 @@ class GalleryViewModel @Inject constructor(
                 val payload = json.decodeFromString<PairingQrPayload>(qrJson)
                 val rxPubKey = payload.publicKeyHex.orEmpty()
                 _pairingState.value = PairingState.AwaitingFulfillment
-                val result = if (rxPubKey.isNotBlank()) {
+                var effectiveResult = if (rxPubKey.isNotBlank()) {
                     devicePairingManager.fulfillSenderSession(
                         mailboxId = payload.mailboxId,
                         receiverPublicKeyHex = rxPubKey,
@@ -562,13 +655,52 @@ class GalleryViewModel @Inject constructor(
                         token = payload.token
                     )
                 }
-                when (result) {
+
+                // Fallback: if not found on current server and an alternate host is present in the QR code, retry with QR server
+                val payloadHost = payload.host
+                val store = serverConfigStore
+                if (effectiveResult is NetworkResult.Failure && !payloadHost.isNullOrBlank() && store != null) {
+                    val current = store.getServerConfig()
+                    if (payloadHost != current.host || (payload.port != null && payload.port != current.port)) {
+                        val fingerprintBytes = payload.fingerprint?.let {
+                            ServerConfigurationStore.parseFingerprint(it)
+                        } ?: current.pinnedCertFingerprintSha256
+                        store.updateServer(
+                            host = payloadHost,
+                            port = payload.port ?: 23342,
+                            useTls = payload.fingerprint != null || store.isTlsEnabled(),
+                            pinnedCertFingerprintSha256 = fingerprintBytes
+                        )
+                        effectiveResult = if (rxPubKey.isNotBlank()) {
+                            devicePairingManager.fulfillSenderSession(
+                                mailboxId = payload.mailboxId,
+                                receiverPublicKeyHex = rxPubKey,
+                                token = payload.token
+                            )
+                        } else {
+                            devicePairingManager.fulfillSenderWithCode(
+                                mailboxId = payload.mailboxId,
+                                token = payload.token
+                            )
+                        }
+                        if (effectiveResult is NetworkResult.Failure) {
+                            store.updateServer(
+                                host = current.host,
+                                port = current.port,
+                                useTls = current.useTls,
+                                pinnedCertFingerprintSha256 = current.pinnedCertFingerprintSha256
+                            )
+                        }
+                    }
+                }
+
+                when (effectiveResult) {
                     is NetworkResult.Success -> {
                         _pairingSuccessMessage.value = "Device successfully linked!"
                         _pairingState.value = null
                     }
                     is NetworkResult.Failure -> {
-                        _pairingState.value = PairingState.Error("Failed to link device: ${result.userMessage}")
+                        _pairingState.value = PairingState.Error("Failed to link device: ${effectiveResult.userMessage}")
                     }
                 }
             } catch (e: Exception) {
@@ -704,18 +836,32 @@ class GalleryViewModel @Inject constructor(
     }
 
     private fun queryNameAndSize(resolver: ContentResolver, uri: Uri): Pair<String?, Long> {
+        var name: String? = null
+        var size = 0L
         try {
             resolver.query(uri, null, null, null)?.use { cursor ->
                 val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                 val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
                 if (cursor.moveToFirst()) {
-                    val name = if (nameIndex != -1) cursor.getString(nameIndex) else null
-                    val size = if (sizeIndex != -1) cursor.getLong(sizeIndex) else 0L
-                    return Pair(name, size)
+                    name = if (nameIndex != -1) cursor.getString(nameIndex) else null
+                    size = if (sizeIndex != -1) cursor.getLong(sizeIndex) else 0L
                 }
             }
         } catch (_: Exception) {}
-        return Pair(null, 0L)
+        if (size <= 0L) {
+            try {
+                resolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    if (pfd.statSize > 0L) size = pfd.statSize
+                }
+            } catch (_: Exception) {}
+        }
+        if (size <= 0L && uri.path != null) {
+            try {
+                val f = java.io.File(uri.path!!)
+                if (f.exists() && f.length() > 0L) size = f.length()
+            } catch (_: Exception) {}
+        }
+        return Pair(name, size)
     }
 
     private fun queryName(resolver: ContentResolver, uri: Uri): String? {

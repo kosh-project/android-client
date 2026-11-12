@@ -75,6 +75,9 @@ fun AppRouter(startDestination: String) {
                     navController.navigate("auth") {
                         popUpTo("gallery") { inclusive = true }
                     }
+                },
+                onOpenServerConfig = {
+                    navController.navigate("server_setup")
                 }
             )
         }

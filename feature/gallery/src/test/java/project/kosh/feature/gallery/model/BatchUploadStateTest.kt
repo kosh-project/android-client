@@ -126,4 +126,78 @@ class BatchUploadStateTest {
         assertEquals("Failed: Connection refused", state.stageDescription)
         assertEquals(0f, state.overallProgress, 0.0001f)
     }
+
+    @Test
+    fun overallProgress_withTotalBatchBytes_calculatesContinuousByteLevelProgressForLargeSingleFile() {
+        val fourGb = 4L * 1024L * 1024L * 1024L
+
+        // Single 4GB video uploading at 1GB (25%)
+        val state1 = BatchUploadState(
+            totalItems = 1,
+            completedItems = 0,
+            totalBatchBytes = fourGb,
+            completedBatchBytes = 0L,
+            currentStage = UploadStage.Uploading(
+                progress = 0.25f,
+                bytesSent = 1L * 1024L * 1024L * 1024L,
+                totalBytes = fourGb
+            )
+        )
+        assertEquals(0.25f, state1.overallProgress, 0.0001f)
+
+        // Uploading at 2GB (50%)
+        val state2 = state1.copy(
+            currentStage = UploadStage.Uploading(
+                progress = 0.50f,
+                bytesSent = 2L * 1024L * 1024L * 1024L,
+                totalBytes = fourGb
+            )
+        )
+        assertEquals(0.50f, state2.overallProgress, 0.0001f)
+
+        // Uploading at 3GB (75%)
+        val state3 = state1.copy(
+            currentStage = UploadStage.Uploading(
+                progress = 0.75f,
+                bytesSent = 3L * 1024L * 1024L * 1024L,
+                totalBytes = fourGb
+            )
+        )
+        assertEquals(0.75f, state3.overallProgress, 0.0001f)
+
+        // Upload finished, now Finalizing in ledger (must NOT drop to 0f!)
+        val stateFinalizing = state1.copy(
+            currentItemBytesSent = fourGb,
+            currentStage = UploadStage.Finalizing
+        )
+        assertEquals(1.0f, stateFinalizing.overallProgress, 0.0001f)
+
+        // Completed (100%)
+        val state4 = state1.copy(
+            completedItems = 1,
+            completedBatchBytes = fourGb,
+            currentStage = UploadStage.Completed
+        )
+        assertEquals(1.0f, state4.overallProgress, 0.0001f)
+    }
+
+    @Test
+    fun overallProgress_withTotalBatchBytes_tracksMultiFileBatchSmoothly() {
+        val totalBytes = 500L * 1024L * 1024L // 500 MB total (file1: 100MB, file2: 400MB)
+
+        // File 1 finished (100MB done), File 2 uploading at 200MB out of 400MB (total 300MB done = 60%)
+        val state = BatchUploadState(
+            totalItems = 2,
+            completedItems = 1,
+            totalBatchBytes = totalBytes,
+            completedBatchBytes = 100L * 1024L * 1024L,
+            currentStage = UploadStage.Uploading(
+                progress = 0.5f,
+                bytesSent = 200L * 1024L * 1024L,
+                totalBytes = 400L * 1024L * 1024L
+            )
+        )
+        assertEquals(0.60f, state.overallProgress, 0.0001f)
+    }
 }
+
