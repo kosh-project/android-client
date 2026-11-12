@@ -276,6 +276,9 @@ class MediaUploadPipelineTest {
         val uri = android.net.Uri.fromFile(tempFile)
 
         coEvery {
+            assetClient.uploadEncryptedUri(any(), any(), eq(AssetTag.GALLERY_ITEM), any(), any(), any(), any())
+        } returns NetworkResult.Success("cas-uri-vid-hash")
+        coEvery {
             assetClient.uploadBytes(any(), eq(AssetTag.GALLERY_ITEM), any(), any())
         } returns NetworkResult.Success("cas-uri-vid-hash")
 
@@ -293,6 +296,27 @@ class MediaUploadPipelineTest {
         assertNotNull(persistedCrypto)
         assertEquals("cas-uri-vid-hash", persistedCrypto?.ciphertextHash)
 
+        coVerify(exactly = 1) {
+            assetClient.uploadEncryptedUri(any(), eq(uri), eq(AssetTag.GALLERY_ITEM), any(), any(), any(), any())
+        }
+
+        tempFile.delete()
+    }
+
+    @Test
+    fun uploadFromUri_emptyFile_returnsError(): Unit = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val tempFile = java.io.File.createTempFile("test_empty_", ".jpg", context.cacheDir)
+        val uri = android.net.Uri.fromFile(tempFile)
+
+        val result = pipeline.uploadFromUri(
+            contentResolver = context.contentResolver,
+            uri = uri,
+            masterVaultKey = masterVaultKey
+        )
+
+        assertTrue(result is UploadResult.Error)
+        assertEquals("Cannot upload empty media bytes", (result as UploadResult.Error).message)
         tempFile.delete()
     }
 }
