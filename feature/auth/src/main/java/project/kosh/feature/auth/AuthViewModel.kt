@@ -578,34 +578,58 @@ class AuthViewModel @Inject constructor(
             try {
                 val payload = json.decodeFromString<PairingQrPayload>(qrJson)
                 val payloadHost = payload.host
-                if (!payloadHost.isNullOrBlank()) {
-                    val fingerprintBytes = payload.fingerprint?.let {
-                        ServerConfigurationStore.parseFingerprint(it)
-                    } ?: serverConfigStore.getServerConfig().pinnedCertFingerprintSha256
 
-                    serverConfigStore.updateServer(
-                        host = payloadHost,
-                        port = payload.port ?: 23342,
-                        useTls = payload.fingerprint != null || serverConfigStore.isTlsEnabled(),
-                        pinnedCertFingerprintSha256 = fingerprintBytes
-                    )
+                suspend fun updateServerFromPayload() {
+                    if (!payloadHost.isNullOrBlank()) {
+                        val fingerprintBytes = payload.fingerprint?.let {
+                            ServerConfigurationStore.parseFingerprint(it)
+                        } ?: serverConfigStore.getServerConfig().pinnedCertFingerprintSha256
+
+                        serverConfigStore.updateServer(
+                            host = payloadHost,
+                            port = payload.port ?: 23342,
+                            useTls = payload.fingerprint != null || serverConfigStore.isTlsEnabled(),
+                            pinnedCertFingerprintSha256 = fingerprintBytes
+                        )
+                    }
                 }
 
                 if (authRepository.hasVaultKey()) {
                     // Flow A: Sender fulfills receiver mailbox
+                    val originalConfig = serverConfigStore.getServerConfig()
                     val rxPubKey = payload.publicKeyHex.orEmpty()
-                    val fulfillResult = if (rxPubKey.isNotBlank()) {
-                        devicePairingManager.fulfillSenderSession(
-                            mailboxId = payload.mailboxId,
-                            receiverPublicKeyHex = rxPubKey,
-                            token = payload.token
-                        )
-                    } else {
-                        devicePairingManager.fulfillSenderWithCode(
-                            mailboxId = payload.mailboxId,
-                            token = payload.token
-                        )
+                    suspend fun tryFulfill(): NetworkResult<Unit> {
+                        return if (rxPubKey.isNotBlank()) {
+                            devicePairingManager.fulfillSenderSession(
+                                mailboxId = payload.mailboxId,
+                                receiverPublicKeyHex = rxPubKey,
+                                token = payload.token
+                            )
+                        } else {
+                            devicePairingManager.fulfillSenderWithCode(
+                                mailboxId = payload.mailboxId,
+                                token = payload.token
+                            )
+                        }
                     }
+
+                    var fulfillResult = tryFulfill()
+                    // Fallback to QR server only if not found on current server
+                    if (fulfillResult is NetworkResult.Failure && !payloadHost.isNullOrBlank()) {
+                        if (payloadHost != originalConfig.host || (payload.port != null && payload.port != originalConfig.port)) {
+                            updateServerFromPayload()
+                            fulfillResult = tryFulfill()
+                            if (fulfillResult is NetworkResult.Failure) {
+                                serverConfigStore.updateServer(
+                                    host = originalConfig.host,
+                                    port = originalConfig.port,
+                                    useTls = originalConfig.useTls,
+                                    pinnedCertFingerprintSha256 = originalConfig.pinnedCertFingerprintSha256
+                                )
+                            }
+                        }
+                    }
+
                     when (fulfillResult) {
                         is NetworkResult.Success -> {
                             _state.value = AuthUiState.Success(isNewRegistration = false)

@@ -750,12 +750,12 @@ class AuthViewModelTest {
     }
 
     @Test
-    fun `linkWithScannedQr forwards certificate fingerprint to ServerConfigurationStore`() = runTest {
+    fun `linkWithScannedQr forwards certificate fingerprint to ServerConfigurationStore on fallback`() = runTest {
         val masterKey = MasterVaultKey.generate()
         every { mockRepository.hasVaultKey() } returns true
         coEvery {
             mockDevicePairingManager.fulfillSenderSession(any(), any(), any(), any())
-        } returns NetworkResult.Success(Unit)
+        } returns NetworkResult.Http.NotFound("mailbox", "Not on this server") andThen NetworkResult.Success(Unit)
 
         val testFingerprintHex = "00".repeat(31) + "ff"
         val testPubKeyHex = "aa".repeat(32)
@@ -769,6 +769,31 @@ class AuthViewModelTest {
                 port = 8443,
                 useTls = true,
                 pinnedCertFingerprintSha256 = match { it.size == 32 && it[31] == 0xff.toByte() }
+            )
+        }
+        masterKey.close()
+    }
+
+    @Test
+    fun `linkWithScannedQr retains current server when mailbox found on current server`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockRepository.hasVaultKey() } returns true
+        coEvery {
+            mockDevicePairingManager.fulfillSenderSession(any(), any(), any(), any())
+        } returns NetworkResult.Success(Unit)
+
+        val testFingerprintHex = "00".repeat(31) + "ff"
+        val testPubKeyHex = "aa".repeat(32)
+        val qrJson = """{"mailbox_id":"c7m9x4b2","public_key":"$testPubKeyHex","host":"127.0.0.1","port":23342,"fingerprint":"$testFingerprintHex"}"""
+        viewModel.linkWithScannedQr(qrJson)
+        testScheduler.advanceUntilIdle()
+
+        io.mockk.verify(exactly = 0) {
+            mockServerConfigStore.updateServer(
+                host = "127.0.0.1",
+                port = any(),
+                useTls = any(),
+                pinnedCertFingerprintSha256 = any()
             )
         }
         masterKey.close()

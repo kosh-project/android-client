@@ -7,6 +7,7 @@ import kotlinx.serialization.json.Json
 import project.kosh.core.crypto.EcdhPairingCrypto
 import project.kosh.core.crypto.HashcashSolver
 import project.kosh.core.crypto.MasterVaultKey
+import project.kosh.core.crypto.X25519KeyPair
 import project.kosh.core.model.MailboxPollState
 import project.kosh.core.model.NetworkResult
 import project.kosh.core.model.PairingQrPayload
@@ -452,54 +453,88 @@ class DevicePairingManager @Inject constructor(
         fingerprint: String? = null,
         timeoutMillis: Long = 300_000L
     ): Flow<PairingState> = flow {
-        if (!host.isNullOrBlank()) {
+        val originalConfig = serverConfigStore.getServerConfig()
+        val hasAlternateHost = !host.isNullOrBlank()
+
+        suspend fun applyQrServer() {
+            if (!hasAlternateHost) return
             val fingerprintBytes = fingerprint?.let { hex ->
                 try {
                     EcdhPairingCrypto.hexToBytes(hex).takeIf { it.size == 32 }
                 } catch (_: Exception) {
                     null
                 }
-            } ?: serverConfigStore.getServerConfig().pinnedCertFingerprintSha256
+            } ?: originalConfig.pinnedCertFingerprintSha256
 
             serverConfigStore.updateServer(
                 host = host,
                 port = port ?: 23342,
-                useTls = fingerprint != null || serverConfigStore.getServerConfig().useTls,
+                useTls = fingerprint != null || originalConfig.useTls,
                 pinnedCertFingerprintSha256 = fingerprintBytes
             )
         }
 
-        // Request PoW challenge
-        val challengeResult = authClient.fetchChallenge("register")
-        if (challengeResult !is NetworkResult.Success) {
-            val failure = challengeResult as NetworkResult.Failure
-            emit(PairingState.Error("Failed to fetch Proof-of-Work challenge: ${failure.userMessage}"))
-            return@flow
-        }
-
-        // Solve PoW puzzle
-        val ephemeralIdentityHash = generateEphemeralIdentityHash()
-        val powHeader = try {
-            hashcashSolver.solve(ephemeralIdentityHash, challengeResult.data.challenge)
-        } catch (e: Exception) {
-            emit(PairingState.Error("Proof-of-Work solver failed: ${e.message}", e))
-            return@flow
-        }
-
-        val rxKeyPair = EcdhPairingCrypto.generateKeyPair()
-
-        try {
+        suspend fun attemptJoin(): Pair<NetworkResult<project.kosh.core.model.MailboxJoinResponse>, X25519KeyPair>? {
+            val challengeResult = authClient.fetchChallenge("register")
+            if (challengeResult !is NetworkResult.Success) {
+                return null
+            }
+            val ephemeralIdentityHash = generateEphemeralIdentityHash()
+            val powHeader = try {
+                hashcashSolver.solve(ephemeralIdentityHash, challengeResult.data.challenge)
+            } catch (_: Exception) {
+                return null
+            }
+            val rxKeyPair = EcdhPairingCrypto.generateKeyPair()
             val joinResult = mailboxClient.joinMailbox(
                 mailboxId = mailboxId,
                 pubTempHex = EcdhPairingCrypto.bytesToHex(rxKeyPair.publicKey),
                 hashcashHeader = powHeader
             )
-            if (joinResult !is NetworkResult.Success) {
-                val failure = joinResult as NetworkResult.Failure
-                emit(PairingState.Error("Failed to join pairing mailbox: ${failure.userMessage}"))
+            return Pair(joinResult, rxKeyPair)
+        }
+
+        // First attempt: always try looking for mailbox on currently connected server
+        var attempt = attemptJoin()
+
+        // Fallback: if not found on current server and an alternate host is present in the QR code, switch and retry
+        if ((attempt == null || attempt.first !is NetworkResult.Success) && hasAlternateHost) {
+            val isDifferent = host != originalConfig.host || (port != null && port != originalConfig.port)
+            if (isDifferent) {
+                attempt?.second?.close()
+                applyQrServer()
+                attempt = attemptJoin()
+                if (attempt == null || attempt.first !is NetworkResult.Success) {
+                    serverConfigStore.updateServer(
+                        host = originalConfig.host,
+                        port = originalConfig.port,
+                        useTls = originalConfig.useTls,
+                        pinnedCertFingerprintSha256 = originalConfig.pinnedCertFingerprintSha256
+                    )
+                }
+            }
+        }
+
+        if (attempt == null) {
+            val challengeResult = authClient.fetchChallenge("register")
+            if (challengeResult !is NetworkResult.Success) {
+                val failure = challengeResult as NetworkResult.Failure
+                emit(PairingState.Error("Failed to fetch Proof-of-Work challenge: ${failure.userMessage}"))
                 return@flow
             }
+            emit(PairingState.Error("Proof-of-Work solver failed"))
+            return@flow
+        }
 
+        val (joinResult, rxKeyPair) = attempt
+        if (joinResult !is NetworkResult.Success) {
+            val failure = joinResult as NetworkResult.Failure
+            rxKeyPair.close()
+            emit(PairingState.Error("Failed to join pairing mailbox: ${failure.userMessage}"))
+            return@flow
+        }
+
+        try {
             emit(PairingState.AwaitingFulfillment)
 
             val pollingToken = joinResult.data.token
