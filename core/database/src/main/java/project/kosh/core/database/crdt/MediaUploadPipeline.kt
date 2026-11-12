@@ -127,7 +127,7 @@ class MediaUploadPipeline @Inject constructor(
         // Step 4: Thumbnail Generation
         onProgress?.invoke(UploadStage.GeneratingThumbnail)
         val thumbnailBytes = try {
-            if (customThumbnailBytes != null) {
+            val extracted = if (customThumbnailBytes != null) {
                 customThumbnailBytes
             } else if (mediaType.startsWith("image/", ignoreCase = true)) {
                 ThumbnailGenerator.generateThumbnail(bytes)
@@ -136,8 +136,28 @@ class MediaUploadPipeline @Inject constructor(
             } else {
                 null
             }
+            if (extracted == null && mediaType.startsWith("video/", ignoreCase = true)) {
+                // Guaranteed fallback thumbnail for video items so remote devices never hang
+                val fallbackBitmap = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888).apply {
+                    eraseColor(android.graphics.Color.DKGRAY)
+                }
+                ThumbnailGenerator.compressBitmap(fallbackBitmap)
+            } else {
+                extracted
+            }
         } catch (_: Exception) {
-            null
+            if (mediaType.startsWith("video/", ignoreCase = true)) {
+                try {
+                    val fallbackBitmap = Bitmap.createBitmap(256, 256, Bitmap.Config.ARGB_8888).apply {
+                        eraseColor(android.graphics.Color.DKGRAY)
+                    }
+                    ThumbnailGenerator.compressBitmap(fallbackBitmap)
+                } catch (_: Exception) {
+                    null
+                }
+            } else {
+                null
+            }
         }
 
         // Cache thumbnail locally if context is available
@@ -367,17 +387,27 @@ class MediaUploadPipeline @Inject constructor(
             }
             if (pfd != null) {
                 pfd.use {
-                    retriever.setDataSource(it.fileDescriptor)
-                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    try {
+                        retriever.setDataSource(it.fileDescriptor, 0, it.statSize)
+                    } catch (_: Exception) {
+                        retriever.setDataSource(it.fileDescriptor)
+                    }
+                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST)
+                        ?: retriever.getFrameAtTime(500_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                        ?: retriever.getFrameAtTime(-1, MediaMetadataRetriever.OPTION_CLOSEST)
                         ?: retriever.frameAtTime
                 }
             } else if (uri.path != null && File(uri.path!!).exists()) {
                 retriever.setDataSource(uri.path)
-                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST)
+                    ?: retriever.getFrameAtTime(500_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                    ?: retriever.getFrameAtTime(-1, MediaMetadataRetriever.OPTION_CLOSEST)
                     ?: retriever.frameAtTime
             } else if (context != null) {
                 retriever.setDataSource(context, uri)
-                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST)
+                    ?: retriever.getFrameAtTime(500_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                    ?: retriever.getFrameAtTime(-1, MediaMetadataRetriever.OPTION_CLOSEST)
                     ?: retriever.frameAtTime
             } else {
                 null
@@ -395,10 +425,12 @@ class MediaUploadPipeline @Inject constructor(
         var tempFile: File? = null
         val retriever = MediaMetadataRetriever()
         return try {
-            tempFile = File.createTempFile("kosh_vid_thumb_", ".tmp", context?.cacheDir)
+            tempFile = File.createTempFile("kosh_vid_thumb_", ".mp4", context?.cacheDir)
             tempFile.writeBytes(bytes)
             retriever.setDataSource(tempFile.absolutePath)
-            val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST)
+                ?: retriever.getFrameAtTime(500_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                ?: retriever.getFrameAtTime(-1, MediaMetadataRetriever.OPTION_CLOSEST)
                 ?: retriever.frameAtTime
             bitmap?.let { b ->
                 try {

@@ -218,7 +218,9 @@ class EncryptedThumbnailLoader @Inject constructor(
         }
 
         // Tier 3: Remote Zero-Knowledge CAS Fetch & Decryption
-        val thumbHash = item.cryptoMapping?.thumbnailCiphertextHash ?: return@withContext null
+        val thumbHash = item.cryptoMapping?.thumbnailCiphertextHash
+            ?: item.asset.thumbnailHash
+            ?: return@withContext null
         val wrappedDek = item.cryptoMapping?.wrappedThumbnailDek
             ?: item.cryptoMapping?.wrappedDek
             ?: return@withContext null
