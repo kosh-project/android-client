@@ -94,11 +94,12 @@ fun FloatingUploadBar(
                     Spacer(Modifier.width(12.dp))
 
                     Column(modifier = Modifier.weight(1f)) {
+                        val percent = (batchState.overallProgress * 100).toInt()
                         Text(
                             text = if (batchState.totalItems > 1) {
-                                "Uploading ${batchState.currentItemIndex} of ${batchState.totalItems}"
+                                "Uploading ${batchState.currentItemIndex} of ${batchState.totalItems} ($percent%)"
                             } else {
-                                "Encrypting & Uploading"
+                                "Encrypting & Uploading ($percent%)"
                             },
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
