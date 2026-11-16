@@ -47,6 +47,9 @@ class SessionManager @Inject constructor(
     private val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
     private val keyAlias = "auth_master_key"
 
+    @Volatile
+    private var cachedVaultKey: MasterVaultKey? = null
+
     init {
         if (!keyStore.containsAlias(keyAlias)) {
             val keyGenerator =
@@ -130,6 +133,7 @@ class SessionManager @Inject constructor(
      * @param vaultKey The active 32-byte Master Vault Key.
      */
     fun saveVaultKey(vaultKey: MasterVaultKey) {
+        cachedVaultKey = vaultKey
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
 
@@ -151,6 +155,11 @@ class SessionManager @Inject constructor(
      * @return The decrypted [MasterVaultKey], or `null` if not found or verification fails.
      */
     fun getVaultKey(): MasterVaultKey? {
+        val cached = cachedVaultKey
+        if (cached != null && !cached.isClosed) {
+            return cached
+        }
+
         val ivBase64 = prefs.getString("vault_key_iv", null) ?: return null
         val ciphertextBase64 = prefs.getString("vault_key_enc", null) ?: return null
 
@@ -168,6 +177,7 @@ class SessionManager @Inject constructor(
             if (getLastActiveAccountId() == null) {
                 saveLastActiveAccountId(computeAccountId(key))
             }
+            cachedVaultKey = key
             key
         } catch (e: Exception) {
             null
@@ -255,6 +265,8 @@ class SessionManager @Inject constructor(
      * Note: "last_active_account_id" is preserved across logout to detect account switches on subsequent logins.
      */
     fun clearToken() {
+        cachedVaultKey?.close()
+        cachedVaultKey = null
         prefs.edit {
             remove("auth_iv")
             remove("auth_token_enc")
