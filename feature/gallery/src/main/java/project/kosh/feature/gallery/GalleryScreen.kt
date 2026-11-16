@@ -19,6 +19,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -32,11 +34,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -78,8 +83,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshState
@@ -88,6 +91,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -110,6 +114,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -131,7 +136,10 @@ import project.kosh.feature.auth.QrCodeGenerator
 import project.kosh.feature.gallery.ui.FloatingUploadBar
 import project.kosh.feature.gallery.ui.FolderSelectionBottomSheet
 import project.kosh.feature.gallery.ui.GalleryItemTile
+import project.kosh.feature.gallery.ui.GalleryScrollDirectionTracker
 import project.kosh.feature.gallery.ui.PermissionRationaleDialog
+import project.kosh.feature.gallery.ui.isGalleryFabExpanded
+import project.kosh.feature.gallery.ui.isGalleryIslandVisible
 import project.kosh.feature.gallery.ui.icons.FolderIcon
 import project.kosh.feature.gallery.ui.icons.LinkIcon
 import project.kosh.feature.gallery.ui.icons.LogoutIcon
@@ -144,6 +152,11 @@ private data class GalleryDateGroup(
     val key: String,
     val title: String,
     val items: List<MediaWithCryptoDetails>
+)
+
+private val ItemPlacementSpec = spring<IntOffset>(
+    dampingRatio = Spring.DampingRatioMediumBouncy,
+    stiffness = Spring.StiffnessMediumLow
 )
 
 /**
@@ -232,27 +245,28 @@ fun GalleryScreen(
     var manualPairingCode by remember { mutableStateOf("") }
 
     val gridState = rememberLazyGridState()
-    var isFabExpanded by remember { mutableStateOf(true) }
-    var prevIndex by remember { mutableIntStateOf(0) }
-    var prevScrollOffset by remember { mutableIntStateOf(0) }
+    val scrollTracker = remember {
+        GalleryScrollDirectionTracker(
+            initialIndex = gridState.firstVisibleItemIndex,
+            initialOffset = gridState.firstVisibleItemScrollOffset
+        )
+    }
+    val isFabExpanded by remember {
+        derivedStateOf {
+            isGalleryFabExpanded(gridState.firstVisibleItemIndex, gridState.firstVisibleItemScrollOffset)
+        }
+    }
 
     LaunchedEffect(gridState) {
-        snapshotFlow { gridState.firstVisibleItemIndex to gridState.firstVisibleItemScrollOffset }
-            .collect { (index, offset) ->
-                if (index == 0 && offset == 0) {
-                    isFabExpanded = true
-                    prevIndex = 0
-                    prevScrollOffset = 0
-                } else if (index > prevIndex || (index == prevIndex && offset > prevScrollOffset + 15)) {
-                    isFabExpanded = false
-                    prevIndex = index
-                    prevScrollOffset = offset
-                } else if (index < prevIndex || (index == prevIndex && offset < prevScrollOffset - 15)) {
-                    isFabExpanded = true
-                    prevIndex = index
-                    prevScrollOffset = offset
-                }
-            }
+        snapshotFlow {
+            Triple(
+                gridState.firstVisibleItemIndex,
+                gridState.firstVisibleItemScrollOffset,
+                gridState.isScrollInProgress
+            )
+        }.collect { (index, offset, inProgress) ->
+            scrollTracker.onScrollUpdate(index, offset, inProgress)
+        }
     }
 
     val isScrollingFast = remember { mutableStateOf(false) }
@@ -374,177 +388,15 @@ fun GalleryScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButtonPosition = FabPosition.Center,
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = "Vault",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Surface(
-                            shape = CircleShape,
-                            color = if (isSessionActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(6.dp)
-                        ) {}
-                        if (!activeUser.isNullOrBlank()) {
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = activeUser.orEmpty(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                },
-                actions = {
-                    var showTopMenu by remember { mutableStateOf(false) }
-
-                    IconButton(onClick = { showTopMenu = true }) {
-                        Icon(
-                            imageVector = MoreVertIcon,
-                            contentDescription = "More Options",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    DropdownMenu(
-                        expanded = showTopMenu,
-                        onDismissRequest = { showTopMenu = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Media folders") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = FolderIcon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            onClick = {
-                                showTopMenu = false
-                                viewModel.openFolderSelection()
-                            }
-                        )
-
-                        DropdownMenuItem(
-                            text = { Text("Link device") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = LinkIcon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            onClick = {
-                                showTopMenu = false
-                                showLinkDeviceBottomSheet = true
-                                viewModel.startHostPairing()
-                            }
-                        )
-
-                        DropdownMenuItem(
-                            text = { Text("Sync vault") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = SyncIcon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            onClick = {
-                                showTopMenu = false
-                                viewModel.triggerManualSync()
-                            }
-                        )
-
-                        DropdownMenuItem(
-                            text = { Text("Server settings") },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = SettingsIcon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            onClick = {
-                                showTopMenu = false
-                                onOpenServerConfig()
-                            }
-                        )
-
-                        DropdownMenuItem(
-                            text = {
-                                if (isPinging) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text("Pinging server...")
-                                        Spacer(Modifier.width(8.dp))
-                                        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
-                                    }
-                                } else {
-                                    Text("Ping server")
-                                }
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = NetworkPingIcon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            enabled = !isPinging,
-                            onClick = {
-                                showTopMenu = false
-                                viewModel.pingServer { result ->
-                                    val msg = when (result) {
-                                        is PingResult.Success -> "Server online (${result.latencyMs}ms)"
-                                        is PingResult.Failure -> "Server unreachable (${result.error})"
-                                    }
-                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                }
-                            }
-                        )
-
-                        HorizontalDivider()
-
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    text = "Log out",
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = LogoutIcon,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            onClick = {
-                                showTopMenu = false
-                                showLogoutDialog = true
-                            }
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background,
-                    scrolledContainerColor = MaterialTheme.colorScheme.surface
-                )
-            )
-        },
         floatingActionButton = {
             Column(
                 horizontalAlignment = Alignment.End,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
+                    .navigationBarsPadding()
             ) {
                 ExtendedFloatingActionButton(
                     expanded = isFabExpanded,
@@ -554,7 +406,7 @@ fun GalleryScreen(
                         )
                     },
                     icon = {
-                        Icon(Icons.Default.Add, contentDescription = "Upload Media")
+                        Icon(Icons.Default.Add, contentDescription = "Upload media")
                     },
                     text = { Text("Upload", fontWeight = FontWeight.SemiBold, fontSize = 15.sp) },
                     shape = RoundedCornerShape(14.dp),
@@ -575,6 +427,23 @@ fun GalleryScreen(
             }
         }
     ) { innerPadding ->
+        var showTopMenu by remember { mutableStateOf(false) }
+        val isIslandVisible by remember {
+            derivedStateOf {
+                isGalleryIslandVisible(
+                    isScrollingDown = scrollTracker.isScrollingDown,
+                    showTopMenu = showTopMenu,
+                    firstVisibleItemIndex = gridState.firstVisibleItemIndex,
+                    firstVisibleItemScrollOffset = gridState.firstVisibleItemScrollOffset
+                )
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
         val coroutineScope = rememberCoroutineScope()
         var isManualRefreshingVisual by remember { mutableStateOf(false) }
         var isDismissingAfterRefresh by remember { mutableStateOf(false) }
@@ -685,7 +554,6 @@ fun GalleryScreen(
             state = pullToRefreshState,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background),
             indicator = {}
         ) {
@@ -693,6 +561,7 @@ fun GalleryScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .statusBarsPadding()
                     .height(overstretchY)
                     .align(Alignment.TopCenter)
                     .graphicsLayer {
@@ -737,6 +606,8 @@ fun GalleryScreen(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
                         .padding(24.dp)
                         .verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -810,7 +681,7 @@ fun GalleryScreen(
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(columnCount),
                     state = gridState,
-                    contentPadding = PaddingValues(2.dp),
+                    contentPadding = PaddingValues(start = 2.dp, end = 2.dp, top = 0.dp, bottom = 96.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     modifier = Modifier
@@ -846,19 +717,24 @@ fun GalleryScreen(
                         }
                 ) {
                     groupedGalleryItems.forEach { group ->
-                        item(
-                            key = "header_${group.key}",
-                            span = { GridItemSpan(maxLineSpan) }
+                        stickyHeader(
+                            key = "header_${group.key}"
                         ) {
-                            Text(
-                                text = group.title,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(start = 12.dp, end = 12.dp, top = 20.dp, bottom = 6.dp)
-                            )
+                            Surface(
+                                color = MaterialTheme.colorScheme.background,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = group.title,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .statusBarsPadding()
+                                        .padding(start = 16.dp, end = 96.dp, top = 8.dp, bottom = 8.dp)
+                                )
+                            }
                         }
 
                         items(group.items, key = { it.asset.fileId }) { item ->
@@ -897,10 +773,7 @@ fun GalleryScreen(
                                     // Fullscreen viewer deferred to next iteration
                                 },
                                 modifier = Modifier.animateItem(
-                                    placementSpec = spring(
-                                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    )
+                                    placementSpec = ItemPlacementSpec
                                 )
                             )
                         }
@@ -908,7 +781,188 @@ fun GalleryScreen(
                 }
             }
         }
+        }
 
+        AnimatedVisibility(
+            visible = isIslandVisible,
+            enter = fadeIn(animationSpec = tween(durationMillis = 200)) + slideInVertically(
+                initialOffsetY = { -it / 2 },
+                animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)
+            ),
+            exit = fadeOut(animationSpec = tween(durationMillis = 150)) + slideOutVertically(
+                targetOffsetY = { -it / 2 },
+                animationSpec = spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)
+            ),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 8.dp, end = 12.dp)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                shadowElevation = 4.dp
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 2.dp, bottom = 2.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (isSessionActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(7.dp)
+                    ) {}
+
+                    if (!activeUser.isNullOrBlank()) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = activeUser.orEmpty(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+
+                    Spacer(Modifier.width(4.dp))
+
+                    Box {
+                        IconButton(
+                            onClick = { showTopMenu = true },
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                imageVector = MoreVertIcon,
+                                contentDescription = "More options",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showTopMenu,
+                            onDismissRequest = { showTopMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Media folders") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = FolderIcon,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    viewModel.openFolderSelection()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text("Link device") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = LinkIcon,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    showLinkDeviceBottomSheet = true
+                                    viewModel.startHostPairing()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text("Sync vault") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = SyncIcon,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    viewModel.triggerManualSync()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text("Server settings") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = SettingsIcon,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    onOpenServerConfig()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = {
+                                    if (isPinging) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text("Pinging server...")
+                                            Spacer(Modifier.width(8.dp))
+                                            CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                                        }
+                                    } else {
+                                        Text("Ping server")
+                                    }
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = NetworkPingIcon,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                enabled = !isPinging,
+                                onClick = {
+                                    showTopMenu = false
+                                    viewModel.pingServer { result ->
+                                        val msg = when (result) {
+                                            is PingResult.Success -> "Server online (${result.latencyMs}ms)"
+                                            is PingResult.Failure -> "Server unreachable (${result.error})"
+                                        }
+                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            )
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = "Log out",
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = LogoutIcon,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    showLogoutDialog = true
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
         }
     }
 
