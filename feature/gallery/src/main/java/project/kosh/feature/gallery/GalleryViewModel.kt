@@ -556,19 +556,20 @@ class GalleryViewModel @Inject constructor(
     /**
      * Resolves a thumbnail bitmap for the given [item] through the 2-tier cache and CAS decryptor.
      */
-    suspend fun loadThumbnail(item: MediaWithCryptoDetails): Bitmap? {
+    suspend fun loadThumbnail(item: MediaWithCryptoDetails, targetPx: Int = 256): Bitmap? {
         val inFlight = _inFlightUploads.value[item.asset.fileId]
         if (inFlight != null) {
             val localBitmap = thumbnailLoader.loadLocalThumbnail(
                 contentResolver = inFlight.contentResolver,
                 uri = inFlight.uri,
                 fileId = item.asset.fileId,
-                mimeType = inFlight.mimeType
+                mimeType = inFlight.mimeType,
+                targetPx = targetPx
             )
             if (localBitmap != null) return localBitmap
         }
         val masterKey = authRepository.getVaultKey()
-        return thumbnailLoader.loadThumbnail(item, masterKey)
+        return thumbnailLoader.loadThumbnail(item, masterKey, targetPx)
     }
 
     /**
@@ -581,52 +582,14 @@ class GalleryViewModel @Inject constructor(
      */
     fun hasDiskCache(fileId: String): Boolean = thumbnailLoader.hasDiskCache(fileId)
 
-    private val thumbnailStaggerMutex = Mutex()
-    private var lastStaggerEpochMs = 0L
-
     /**
-     * Resolves a thumbnail bitmap for the given [item] with throttled state emission pacing
-     * to eliminate frame hitching during fling deceleration and ensure tiles smoothly cascade in.
+     * Resolves a thumbnail bitmap for the given [item] without artificial mutex delays,
+     * relying on coroutine structured concurrency and tile debouncing.
      */
-    suspend fun loadThumbnailStaggered(item: MediaWithCryptoDetails): Bitmap? {
+    suspend fun loadThumbnailStaggered(item: MediaWithCryptoDetails, targetPx: Int = 256): Bitmap? {
         val cached = getFromMemoryCache(item)
         if (cached != null) return cached
-
-        val hasDisk = hasDiskCache(item.asset.fileId) || isInFlight(item.asset.fileId)
-
-        return if (hasDisk) {
-            // For local disk / in-flight items, serialize decoding with staggered pacing
-            // so we decode and emit one by one with a smooth ~20ms cadence
-            thumbnailStaggerMutex.withLock {
-                val rechecked = getFromMemoryCache(item)
-                if (rechecked != null) return@withLock rechecked
-
-                val now = System.currentTimeMillis()
-                val elapsed = (now - lastStaggerEpochMs).coerceAtLeast(0L)
-                val minGapMs = 20L
-                if (elapsed < minGapMs) {
-                    delay(minGapMs - elapsed)
-                }
-
-                val bitmap = loadThumbnail(item)
-                lastStaggerEpochMs = System.currentTimeMillis()
-                bitmap
-            }
-        } else {
-            // For remote items, perform network download asynchronously without holding the stagger lock
-            val bitmap = loadThumbnail(item) ?: return null
-            // Throttle state emission so remote arrivals also cascade smoothly into UI
-            thumbnailStaggerMutex.withLock {
-                val now = System.currentTimeMillis()
-                val elapsed = (now - lastStaggerEpochMs).coerceAtLeast(0L)
-                val minGapMs = 20L
-                if (elapsed < minGapMs) {
-                    delay(minGapMs - elapsed)
-                }
-                lastStaggerEpochMs = System.currentTimeMillis()
-            }
-            bitmap
-        }
+        return loadThumbnail(item, targetPx)
     }
 
     /**
