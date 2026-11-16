@@ -7,6 +7,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -87,7 +89,8 @@ fun UserSetupScreen(
     }
 
     Scaffold(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0)
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -99,12 +102,12 @@ fun UserSetupScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
+                    .navigationBarsPadding()
             ) {
-                // Playful Registration Progress Bar (Step 3 or Step 4 of 4)
+                // Registration Progress Bar (Step 3 or Step 4 of 4)
                 RegistrationProgressBar(
                     currentStep = if (currentSubStep == 1) 3 else 4,
-                    totalSteps = 4,
-                    modifier = Modifier.padding(top = 8.dp)
+                    totalSteps = 4
                 )
 
                 AnimatedContent(
@@ -146,7 +149,7 @@ fun UserSetupScreen(
 }
 
 /**
- * Sub-step 1: Device Label setup with concise, clear instructions fitting standard screens without scrolling.
+ * Sub-step 1: Device label setup with concise, clear instructions fitting standard screens without scrolling.
  */
 @Composable
 private fun DeviceLabelSubStep(
@@ -158,26 +161,28 @@ private fun DeviceLabelSubStep(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 24.dp, vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+            .padding(horizontal = 24.dp, vertical = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
             KoshBrandLogo(size = 56.dp)
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(18.dp))
 
             Text(
-                text = "Welcome",
-                style = MaterialTheme.typography.headlineMedium,
+                text = "Device label",
+                style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(8.dp))
 
             Text(
                 text = "Choose a label for this device to identify it in your vault.",
@@ -191,18 +196,18 @@ private fun DeviceLabelSubStep(
             OutlinedTextField(
                 value = nickname,
                 onValueChange = onNicknameChange,
-                label = { Text("Device Nickname") },
+                label = { Text("Device nickname") },
                 placeholder = { Text("e.g. My Phone") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp)
             )
 
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(16.dp))
 
             // Shortened Security Notice
             Surface(
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(14.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -216,7 +221,7 @@ private fun DeviceLabelSubStep(
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(20.dp)
                     )
-                    Spacer(Modifier.width(10.dp))
+                    Spacer(Modifier.width(12.dp))
                     Text(
                         text = "Your vault is encrypted with a master key. Only you hold the recovery keys.",
                         style = MaterialTheme.typography.bodySmall,
@@ -226,34 +231,37 @@ private fun DeviceLabelSubStep(
             }
         }
 
-        // Action Buttons at Bottom
+        // Action Buttons Pinned at Bottom
         Column(modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = onContinue,
-                shape = RoundedCornerShape(28.dp),
+                shape = RoundedCornerShape(14.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp)
+                    .height(52.dp)
             ) {
-                Text("Continue", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Text("Continue", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.width(8.dp))
                 Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null, modifier = Modifier.size(18.dp))
             }
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
 
             TextButton(
                 onClick = onSkip,
-                modifier = Modifier.fillMaxWidth()
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
             ) {
-                Text("Skip for now", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Skip for now", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp)
             }
         }
     }
 }
 
 /**
- * Sub-step 2: Biometric Passkey enrollment fitting standard screens without scrolling.
+ * Sub-step 2: Biometric passkey enrollment fitting standard screens without scrolling.
  */
 @Composable
 private fun BiometricPasskeySubStep(
@@ -264,39 +272,42 @@ private fun BiometricPasskeySubStep(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 24.dp, vertical = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+            .padding(horizontal = 24.dp, vertical = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
             Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primaryContainer,
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
                 modifier = Modifier.size(56.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = Icons.Default.Fingerprint,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.size(32.dp)
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(30.dp)
                     )
                 }
             }
 
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(18.dp))
 
             Text(
-                text = "Biometric Passkey",
-                style = MaterialTheme.typography.headlineMedium,
+                text = "Biometric passkey",
+                style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
 
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(8.dp))
 
             Text(
                 text = "Sign in instantly with your fingerprint or screen lock.",
@@ -313,22 +324,22 @@ private fun BiometricPasskeySubStep(
                         onClick = onEnroll,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(56.dp),
-                        shape = RoundedCornerShape(28.dp)
+                            .height(52.dp),
+                        shape = RoundedCornerShape(14.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Fingerprint,
                             contentDescription = null,
                             modifier = Modifier.size(20.dp)
                         )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Enroll Biometric Passkey", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Enroll biometric passkey", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                     }
                 }
 
                 is PasskeyEnrollmentState.Enrolling -> {
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -339,8 +350,8 @@ private fun BiometricPasskeySubStep(
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(12.dp))
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
+                            Spacer(Modifier.width(14.dp))
                             Text(
                                 text = "Registering hardware passkey...",
                                 style = MaterialTheme.typography.bodyMedium
@@ -351,7 +362,7 @@ private fun BiometricPasskeySubStep(
 
                 is PasskeyEnrollmentState.Enrolled -> {
                     Surface(
-                        shape = RoundedCornerShape(16.dp),
+                        shape = RoundedCornerShape(14.dp),
                         color = MaterialTheme.colorScheme.primaryContainer,
                         modifier = Modifier.fillMaxWidth()
                     ) {
@@ -363,14 +374,14 @@ private fun BiometricPasskeySubStep(
                                 imageVector = Icons.Default.CheckCircle,
                                 contentDescription = "Enrolled",
                                 tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(26.dp)
+                                modifier = Modifier.size(28.dp)
                             )
-                            Spacer(Modifier.width(12.dp))
+                            Spacer(Modifier.width(14.dp))
                             Column {
                                 Text(
-                                    text = "Passkey Enrolled",
+                                    text = "Passkey enrolled",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Bold,
+                                    fontWeight = FontWeight.SemiBold,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
                                 Text(
@@ -386,7 +397,7 @@ private fun BiometricPasskeySubStep(
                 is PasskeyEnrollmentState.Error -> {
                     Column(modifier = Modifier.fillMaxWidth()) {
                         Surface(
-                            shape = RoundedCornerShape(16.dp),
+                            shape = RoundedCornerShape(14.dp),
                             color = MaterialTheme.colorScheme.errorContainer,
                             modifier = Modifier.fillMaxWidth()
                         ) {
@@ -400,7 +411,7 @@ private fun BiometricPasskeySubStep(
                                     tint = MaterialTheme.colorScheme.onErrorContainer,
                                     modifier = Modifier.size(20.dp)
                                 )
-                                Spacer(Modifier.width(8.dp))
+                                Spacer(Modifier.width(10.dp))
                                 Text(
                                     text = enrollmentState.message,
                                     style = MaterialTheme.typography.bodySmall,
@@ -414,41 +425,45 @@ private fun BiometricPasskeySubStep(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(52.dp),
-                            shape = RoundedCornerShape(26.dp)
+                            shape = RoundedCornerShape(14.dp)
                         ) {
-                            Text("Try Again", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                            Text("Try again", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                         }
                     }
                 }
             }
         }
 
-        // Action Buttons at Bottom
+        // Action Buttons Pinned at Bottom
         Column(modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = onFinish,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(28.dp)
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp)
             ) {
                 Text(
-                    text = if (enrollmentState is PasskeyEnrollmentState.Enrolled) "Finish & Open Gallery" else "Continue to Gallery",
-                    fontWeight = FontWeight.Bold,
+                    text = if (enrollmentState is PasskeyEnrollmentState.Enrolled) "Finish and open gallery" else "Continue to gallery",
+                    fontWeight = FontWeight.SemiBold,
                     fontSize = 16.sp
                 )
             }
 
             if (enrollmentState !is PasskeyEnrollmentState.Enrolled) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
 
                 TextButton(
                     onClick = onFinish,
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
                 ) {
                     Text(
                         text = "Skip for now",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 15.sp
                     )
                 }
             }
