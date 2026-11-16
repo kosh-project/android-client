@@ -11,6 +11,10 @@ import okio.buffer
  * Decorator for OkHttp [RequestBody] that reports deterministic byte upload progress
  * by counting bytes written to the network [BufferedSink].
  *
+ * Forwards writes directly through Okio's [ForwardingSink] and ensures all chunks
+ * are flushed immediately through to the underlying network socket, preventing
+ * [okio.RealBufferedSink] from buffering chunks up to the Dalvik heap ceiling.
+ *
  * @param delegate Underlying body (e.g. file or in-memory byte buffer).
  * @param onProgress Callback invoked on each buffer chunk write with (bytesWritten, totalBytes).
  */
