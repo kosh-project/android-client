@@ -4,6 +4,9 @@ on:
   push:
     branches: [ main, master ] # Change this if your default branch is different
 
+permissions:
+  contents: read
+
 jobs:
   codeberg-mirror:
     runs-on: ubuntu-latest
