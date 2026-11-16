@@ -9,6 +9,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -143,7 +145,8 @@ fun ServerSetupScreen(
     }
 
     Scaffold(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0)
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -151,7 +154,7 @@ fun ServerSetupScreen(
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().navigationBarsPadding()) {
                 val showBackButton = uiState.stage !is ServerSetupStage.Locating || onBack != null
                 if (showBackButton) {
                     Row(
@@ -179,7 +182,7 @@ fun ServerSetupScreen(
                         }
                     }
                 } else {
-                    Spacer(Modifier.statusBarsPadding().height(8.dp))
+                    Spacer(Modifier.statusBarsPadding())
                 }
 
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -305,22 +308,23 @@ fun ServerSetupScreen(
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error
                             ),
-                            shape = RoundedCornerShape(26.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(52.dp)
+                                .height(48.dp)
                         ) {
-                            Text("Choose Another Server", fontWeight = FontWeight.SemiBold)
+                            Text("Choose another server", fontWeight = FontWeight.SemiBold)
                         }
                     },
                     dismissButton = {
                         TextButton(
                             onClick = { viewModel.dismissMismatchDialog() },
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(52.dp)
+                                .height(44.dp)
                         ) {
-                            Text("Retry Scanning", fontWeight = FontWeight.Medium)
+                            Text("Retry scanning", fontWeight = FontWeight.Medium)
                         }
                     }
                 )
@@ -379,12 +383,11 @@ private fun LocateServerContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp, vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "Connect to Server",
+            text = "Connect to server",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
@@ -399,12 +402,22 @@ private fun LocateServerContent(
             textAlign = TextAlign.Center
         )
 
-        // Error Banner
-        AnimatedVisibility(
-            visible = !errorMessage.isNullOrBlank(),
-            enter = fadeIn(),
-            exit = fadeOut()
+        Spacer(Modifier.height(16.dp))
+
+        // Middle Consumable Viewport (Weight 1f, Scrollable)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            // Error Banner
+            AnimatedVisibility(
+                visible = !errorMessage.isNullOrBlank(),
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -448,7 +461,7 @@ private fun LocateServerContent(
 
         // Discovered Servers Card List — OFFERED FIRST TO THE USER
         Text(
-            text = "Nearby Servers",
+            text = "Nearby servers",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.fillMaxWidth()
@@ -458,8 +471,9 @@ private fun LocateServerContent(
 
         if (discoveredServers.isEmpty()) {
             Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -487,7 +501,7 @@ private fun LocateServerContent(
                     val serverHost = server.domain
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
+                        shape = RoundedCornerShape(12.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant
                     ) {
                         Row(
@@ -530,8 +544,8 @@ private fun LocateServerContent(
                                 onClick = {
                                     onConnect(serverHost, server.port, server.isTls)
                                 },
-                                shape = RoundedCornerShape(20.dp),
-                                modifier = Modifier.height(44.dp)
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.height(40.dp)
                             ) {
                                 Text("Connect", fontWeight = FontWeight.SemiBold)
                             }
@@ -545,8 +559,9 @@ private fun LocateServerContent(
 
         // Advanced Options Accordion Header
         Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { showAdvancedSettings = !showAdvancedSettings }
@@ -558,7 +573,7 @@ private fun LocateServerContent(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Advanced Options",
+                        text = "Advanced options",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -589,13 +604,14 @@ private fun LocateServerContent(
             ) {
                 // Development & ADB Testing Section
                 Surface(
-                    shape = RoundedCornerShape(18.dp),
+                    shape = RoundedCornerShape(12.dp),
                     color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "Development & ADB Testing",
+                            text = "Development & ADB testing",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -616,7 +632,7 @@ private fun LocateServerContent(
                         ) {
                             Button(
                                 onClick = onConnectAdb,
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(44.dp)
@@ -626,7 +642,7 @@ private fun LocateServerContent(
 
                             OutlinedButton(
                                 onClick = onConnectEmulator,
-                                shape = RoundedCornerShape(12.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(44.dp)
@@ -639,7 +655,8 @@ private fun LocateServerContent(
 
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.background,
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable {
@@ -659,7 +676,7 @@ private fun LocateServerContent(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "COPY",
+                                    text = "Copy",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = FontWeight.Bold,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -673,7 +690,7 @@ private fun LocateServerContent(
 
                 // Manual Connection Parameters
                 Text(
-                    text = "Manual Parameters",
+                    text = "Manual parameters",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.fillMaxWidth()
@@ -692,10 +709,10 @@ private fun LocateServerContent(
                             portInput = ServerConfig.PORT_DEV.toString()
                             tlsInput = true
                         },
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .height(44.dp)
+                            .height(40.dp)
                     ) {
                         Text("kosh.local", style = MaterialTheme.typography.labelSmall)
                     }
@@ -705,10 +722,10 @@ private fun LocateServerContent(
                             portInput = ServerConfig.PORT_DEV.toString()
                             tlsInput = true
                         },
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .height(44.dp)
+                            .height(40.dp)
                     ) {
                         Text("192.168.1.5", style = MaterialTheme.typography.labelSmall)
                     }
@@ -716,12 +733,12 @@ private fun LocateServerContent(
                         onClick = {
                             hostInput = ServerConfig.HOST_LOCALHOST
                             portInput = ServerConfig.PORT_DEV.toString()
-                            tlsInput = false
+                            tlsInput = true
                         },
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         modifier = Modifier
                             .weight(1f)
-                            .height(44.dp)
+                            .height(40.dp)
                     ) {
                         Text("Localhost", style = MaterialTheme.typography.labelSmall)
                     }
@@ -732,13 +749,13 @@ private fun LocateServerContent(
                 OutlinedTextField(
                     value = hostInput,
                     onValueChange = { hostInput = it },
-                    label = { Text("Server Host / Domain") },
+                    label = { Text("Server host or IP") },
                     placeholder = { Text("e.g. kosh.local or 192.168.1.5") },
                     isError = !isHostValid,
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(10.dp)
                 )
 
                 Spacer(Modifier.height(12.dp))
@@ -764,14 +781,15 @@ private fun LocateServerContent(
                     ),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp)
+                    shape = RoundedCornerShape(10.dp)
                 )
 
                 Spacer(Modifier.height(12.dp))
 
                 Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -800,27 +818,62 @@ private fun LocateServerContent(
                     }
                 }
 
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
 
+    // Pinned Bottom Action: Thumb-reachable primary actions
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 12.dp)
+    ) {
+        if (showAdvancedSettings) {
+            Button(
+                onClick = {
+                    focusManager.clearFocus()
+                    val p = parsedPort
+                    if (isHostValid && p != null && p in 1..65535) {
+                        onConnect(hostInput, p, tlsInput)
+                    }
+                },
+                enabled = isHostValid && isPortValid,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+            ) {
+                Text("Connect to server", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            }
+        } else {
+            if (discoveredServers.isNotEmpty()) {
+                val primaryServer = discoveredServers.first()
                 Button(
                     onClick = {
-                        focusManager.clearFocus()
-                        val p = parsedPort
-                        if (isHostValid && p != null && p in 1..65535) {
-                            onConnect(hostInput, p, tlsInput)
-                        }
+                        onConnect(primaryServer.domain, primaryServer.port, primaryServer.isTls)
                     },
-                    enabled = isHostValid && isPortValid,
-                    shape = RoundedCornerShape(28.dp),
+                    shape = RoundedCornerShape(14.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(56.dp)
+                        .height(52.dp)
                 ) {
-                    Text("Connect to Server", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text("Connect to ${primaryServer.name}", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                }
+            } else {
+                OutlinedButton(
+                    onClick = { showAdvancedSettings = true },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                ) {
+                    Text("Configure manual connection", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 }
             }
         }
     }
+}
 }
 
 /**
@@ -848,7 +901,7 @@ private fun ProbingServerContent(
         Spacer(Modifier.height(24.dp))
 
         Text(
-            text = "Connecting to Server",
+            text = "Connecting to server",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold
         )
@@ -875,8 +928,8 @@ private fun ProbingServerContent(
 
         OutlinedButton(
             onClick = onCancel,
-            shape = RoundedCornerShape(24.dp),
-            modifier = Modifier.height(48.dp)
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier.height(44.dp)
         ) {
             Text("Cancel", fontWeight = FontWeight.Medium)
         }
@@ -886,9 +939,9 @@ private fun ProbingServerContent(
 /**
  * Step 2: Fingerprint Verification Content.
  *
- * Prominently presents "Scan Server QR Code" as the primary action.
- * BIP-39 SAS 12-words, SHA-256 fingerprint, and "Fingerprint matches" button
- * are tucked behind a collapsible "Manual Verification" accordion.
+ * Prominently presents "Scan server QR code" as the primary action.
+ * BIP-39 SAS 12-words, SHA-256 fingerprint, and "Confirm fingerprint" button
+ * are tucked behind a collapsible "Manual verification" accordion.
  */
 @Suppress("DEPRECATION")
 @Composable
@@ -905,12 +958,11 @@ private fun VerificationContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp, vertical = 20.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "Verify Server Security",
+            text = "Verify server security",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
@@ -927,245 +979,262 @@ private fun VerificationContent(
 
         Spacer(Modifier.height(16.dp))
 
-        // Server Badge
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.fillMaxWidth()
+        // Middle Consumable Viewport (Weight 1f, Scrollable)
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // Server Badge
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = if (probeResult.isTls) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.size(10.dp)
-                ) {}
-                Spacer(Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "${probeResult.host}:${probeResult.port}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    Text(
-                        text = if (probeResult.isTls) "TLS Self-Signed Certificate" else "Plaintext HTTP (No TLS)",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = if (probeResult.isTls) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(10.dp)
+                    ) {}
+                    Spacer(Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${probeResult.host}:${probeResult.port}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(
+                            text = if (probeResult.isTls) "TLS self-signed certificate" else "Plaintext HTTP (no TLS)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
-        }
 
-        Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(16.dp))
 
-        // Primary Action: Scan QR Code (Offered first!)
-        Button(
-            onClick = onScanQr,
-            shape = RoundedCornerShape(28.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(56.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.QrCodeScanner,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(Modifier.width(10.dp))
-            Text("Scan Server QR Code", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        // Manual Verification Accordion Toggle
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { showManualVerification = !showManualVerification }
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Manual Verification",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "Verify 12 words & SHA-256 fingerprint manually",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Icon(
-                    imageVector = if (showManualVerification) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                    contentDescription = if (showManualVerification) "Collapse" else "Expand",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        // Manual Verification Collapsible Body
-        AnimatedVisibility(
-            visible = showManualVerification,
-            enter = fadeIn() + expandVertically(),
-            exit = fadeOut() + shrinkVertically()
-        ) {
-            Column(
+            // Manual Verification Accordion Toggle
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 16.dp)
+                    .clickable { showManualVerification = !showManualVerification }
             ) {
-                if (probeResult.isTls && probeResult.sasWords.isNotEmpty()) {
-                    // BIP-39 SAS 12-Word Verification Section
-                    Text(
-                        text = "VERIFICATION WORDS",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp,
-                        color = MaterialTheme.colorScheme.primary
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Manual verification",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Verify 12 words & SHA-256 fingerprint manually",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Icon(
+                        imageVector = if (showManualVerification) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = if (showManualVerification) "Collapse" else "Expand",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "Match these 12 words against your server CLI pairing screen (press 'p').",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                }
+            }
 
-                    Spacer(Modifier.height(12.dp))
+            // Manual Verification Collapsible Body
+            AnimatedVisibility(
+                visible = showManualVerification,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 16.dp)
+                ) {
+                    if (probeResult.isTls && probeResult.sasWords.isNotEmpty()) {
+                        // BIP-39 SAS 12-Word Verification Section
+                        Text(
+                            text = "Verification words",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "Match these 12 words against your server CLI pairing screen (press 'p').",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
 
-                    val rows = Bip39Sas.formatRows(probeResult.sasWords)
-                    rows.forEachIndexed { rowIndex, rowWords ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 3.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            rowWords.forEachIndexed { colIndex, word ->
-                                val wordNum = rowIndex * 4 + colIndex + 1
-                                Surface(
-                                    modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
+                        Spacer(Modifier.height(12.dp))
+
+                        val rows = Bip39Sas.formatRows(probeResult.sasWords)
+                        rows.forEachIndexed { rowIndex, rowWords ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                rowWords.forEachIndexed { colIndex, word ->
+                                    val wordNum = rowIndex * 4 + colIndex + 1
+                                    Surface(
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surface,
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
                                     ) {
-                                        Text(
-                                            text = "%02d".format(wordNum),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 10.sp
-                                        )
-                                        Text(
-                                            text = word,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.Bold,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1
-                                        )
+                                        Column(
+                                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(
+                                                text = "%02d".format(wordNum),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 10.sp
+                                            )
+                                            Text(
+                                                text = word,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(16.dp))
 
-                    // Fingerprint Hex Display with monospaced body and clear heading distinction
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                clipboardManager.setText(AnnotatedString(probeResult.fingerprintHex))
-                                Toast.makeText(context, "Fingerprint copied", Toast.LENGTH_SHORT).show()
+                        // Fingerprint Hex Display with monospaced body and clear heading distinction
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surface,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    clipboardManager.setText(AnnotatedString(probeResult.fingerprintHex))
+                                    Toast.makeText(context, "Fingerprint copied", Toast.LENGTH_SHORT).show()
+                                }
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Text(
+                                    text = "SHA-256 fingerprint",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    text = probeResult.fingerprintHex.chunked(8).joinToString(" "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Medium,
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 2
+                                )
                             }
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Text(
-                                text = "SHA-256 FINGERPRINT",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                text = probeResult.fingerprintHex.chunked(8).joinToString(" "),
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Medium,
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 2
-                            )
                         }
-                    }
 
-                    Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(16.dp))
 
-                    // Action: Manual Confirm (Inside Manual Verification Accordion)
-                    FilledTonalButton(
-                        onClick = onConfirm,
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("Fingerprint Matches, Continue", fontWeight = FontWeight.SemiBold)
-                    }
-                } else {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = "Unencrypted Connection",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.error
+                        // Action: Manual Confirm (Inside Manual Verification Accordion)
+                        FilledTonalButton(
+                            onClick = onConfirm,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
                             )
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = "This server does not have TLS enabled. Plaintext HTTP does not support certificate fingerprint verification.",
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("Confirm fingerprint and continue", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "Unencrypted connection",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    text = "This server does not have TLS enabled. Plaintext HTTP does not support certificate fingerprint verification.",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
                         }
                     }
                 }
             }
         }
 
-        Spacer(Modifier.height(16.dp))
-
-        // Action: Choose Another Server
-        TextButton(
-            onClick = onBack,
-            modifier = Modifier.fillMaxWidth()
+        // Pinned Thumb-Friendly Action Column
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 12.dp)
         ) {
-            Text("Choose Another Server", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Button(
+                onClick = onScanQr,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.QrCodeScanner,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Scan server QR code", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            TextButton(
+                onClick = onBack,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                Text("Choose another server", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 15.sp)
+            }
         }
     }
 }

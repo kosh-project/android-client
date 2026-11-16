@@ -376,4 +376,22 @@ class AuthRepository @Inject constructor(
     fun saveSessionToken(token: String) {
         sessionManager.saveToken(token)
     }
+
+    /**
+     * Resolves the cryptographic identifier of the last active account.
+     */
+    fun getLastActiveAccountId(): String? = sessionManager.getLastActiveAccountId()
+
+    /**
+     * Persists the cryptographic identifier of the active account.
+     */
+    fun saveLastActiveAccountId(accountId: String) {
+        sessionManager.saveLastActiveAccountId(accountId)
+    }
+
+    /**
+     * Computes the deterministic SHA-256 account ID for the specified [MasterVaultKey].
+     */
+    fun computeAccountId(vaultKey: MasterVaultKey): String = sessionManager.computeAccountId(vaultKey)
 }
+

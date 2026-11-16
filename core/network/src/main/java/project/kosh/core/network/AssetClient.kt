@@ -115,9 +115,10 @@ class AssetClient @Inject constructor(
             contentResolver = contentResolver,
             uri = uri,
             dek = dek,
-            plaintextSize = plaintextSize
+            plaintextSize = plaintextSize,
+            onProgress = onProgress
         )
-        val requestBody = if (onProgress != null) ProgressRequestBody(streamingBody, onProgress) else streamingBody
+        val requestBody = streamingBody
 
         val request = Request.Builder()
             .url("$baseUrl/upload/${tag.id}")

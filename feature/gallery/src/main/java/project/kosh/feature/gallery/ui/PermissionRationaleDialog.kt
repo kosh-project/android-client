@@ -41,14 +41,14 @@ fun PermissionRationaleDialog(
         confirmButton = {
             Button(
                 onClick = onGrantPermission,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(10.dp)
             ) {
-                Text("Grant Access & Choose Folders", fontWeight = FontWeight.Bold)
+                Text("Grant access & choose folders", fontWeight = FontWeight.SemiBold)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Not Now")
+                Text("Not now")
             }
         },
         title = {
@@ -72,7 +72,7 @@ fun PermissionRationaleDialog(
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    text = "Private Node Media Sync",
+                    text = "Private node media sync",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
@@ -96,6 +96,6 @@ fun PermissionRationaleDialog(
                 )
             }
         },
-        shape = RoundedCornerShape(24.dp)
+        shape = RoundedCornerShape(16.dp)
     )
 }

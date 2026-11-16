@@ -8,6 +8,7 @@ import android.graphics.pdf.PdfDocument
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -133,7 +135,8 @@ fun RecoveryBackupScreen(
     }
 
     Scaffold(
-        modifier = Modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize(),
+        contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0)
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -144,30 +147,30 @@ fun RecoveryBackupScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
                     .statusBarsPadding()
             ) {
-                // Playful Registration Progress Bar (Step 2 of 4)
+                // Registration Progress Bar (Step 2 of 4)
                 RegistrationProgressBar(
                     currentStep = 2,
-                    totalSteps = 4,
-                    modifier = Modifier.padding(top = 8.dp)
+                    totalSteps = 4
                 )
 
                 Column(
                     modifier = Modifier
+                        .weight(1f)
                         .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                         .padding(horizontal = 24.dp, vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "Recovery Phrase",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
+                        text = "Recovery phrase",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
                         textAlign = TextAlign.Center
                     )
 
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(6.dp))
 
                     Text(
                         text = "Write these words down on paper or export them to an offline storage drive. Never store unencrypted recovery words online.",
@@ -176,7 +179,7 @@ fun RecoveryBackupScreen(
                         textAlign = TextAlign.Center
                     )
 
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(16.dp))
 
                     // Numbered 24-Word Grid (3 columns x 8 rows)
                     Column(
@@ -192,7 +195,7 @@ fun RecoveryBackupScreen(
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 if (firstIndex < words.size) {
                                     WordGridCell(
@@ -234,11 +237,11 @@ fun RecoveryBackupScreen(
                         value = words.joinToString(" "),
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Master Recovery Phrase") },
+                        label = { Text("Master recovery phrase") },
                         modifier = Modifier
                             .fillMaxWidth()
                             .semantics { contentType = ContentType.Password },
-                        shape = RoundedCornerShape(12.dp),
+                        shape = RoundedCornerShape(10.dp),
                         minLines = 2,
                         maxLines = 3
                     )
@@ -247,7 +250,7 @@ fun RecoveryBackupScreen(
 
                     // Export Options Section
                     Text(
-                        text = "Backup & Export Options",
+                        text = "Backup and export options",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.fillMaxWidth()
@@ -257,113 +260,126 @@ fun RecoveryBackupScreen(
 
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         // Export Plaintext File (.txt) with TextSnippet Icon
                         FilledTonalButton(
                             onClick = { txtExportLauncher.launch("kosh-recovery-phrase.txt") },
-                            shape = RoundedCornerShape(28.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(56.dp)
+                                .height(48.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.TextSnippet,
                                 contentDescription = null,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(18.dp)
                             )
-                            Spacer(Modifier.width(10.dp))
-                            Text("Export Document (.txt)", fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Export document (.txt)", fontWeight = FontWeight.Medium)
                         }
 
                         // Export Printable Paper Wallet (.pdf) with PictureAsPdf Icon
                         FilledTonalButton(
                             onClick = { pdfExportLauncher.launch("kosh-paper-wallet.pdf") },
-                            shape = RoundedCornerShape(28.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(56.dp)
+                                .height(48.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.PictureAsPdf,
                                 contentDescription = null,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(18.dp)
                             )
-                            Spacer(Modifier.width(10.dp))
-                            Text("Printable Paper Wallet (.pdf)", fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Printable paper wallet (.pdf)", fontWeight = FontWeight.Medium)
                         }
 
                         // Secure Clipboard Copy with CopyAll Icon
                         OutlinedButton(
                             onClick = { showClipboardAlert = true },
-                            shape = RoundedCornerShape(28.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(56.dp)
+                                .height(48.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.CopyAll,
                                 contentDescription = null,
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(18.dp)
                             )
-                            Spacer(Modifier.width(10.dp))
-                            Text("Copy to Clipboard", fontWeight = FontWeight.Medium)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Copy to clipboard", fontWeight = FontWeight.Medium)
                         }
                     }
 
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(12.dp))
+                }
 
-                    // Acknowledgment Checkbox Barrier
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                // Tier 3 (Bottom): Thumb-reachable primary actions pinned to bottom
+                Surface(
+                    color = MaterialTheme.colorScheme.background,
+                    tonalElevation = 3.dp,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { hasAcknowledged = !hasAcknowledged }
+                            .navigationBarsPadding()
+                            .padding(horizontal = 24.dp, vertical = 12.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        // Acknowledgment Checkbox Barrier
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { hasAcknowledged = !hasAcknowledged }
                         ) {
-                            Checkbox(
-                                checked = hasAcknowledged,
-                                onCheckedChange = { hasAcknowledged = it }
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = hasAcknowledged,
+                                    onCheckedChange = { hasAcknowledged = it }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = "I have securely saved my 24-word recovery phrase in offline cold storage.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        // Primary Action Button: Proceed to Vault (large thumb-reachable button)
+                        Button(
+                            onClick = onProceed,
+                            enabled = hasAcknowledged,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(20.dp)
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                text = "I have securely saved my 24-word recovery phrase in offline cold storage.",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface
+                                text = "Proceed to vault",
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 16.sp
                             )
                         }
                     }
-
-                    Spacer(Modifier.height(20.dp))
-
-                    // Primary Action Button: Proceed to Vault
-                    Button(
-                        onClick = onProceed,
-                        enabled = hasAcknowledged,
-                        shape = RoundedCornerShape(28.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = "Proceed to Vault",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp
-                        )
-                    }
-
-                    Spacer(Modifier.height(16.dp))
                 }
             }
 
@@ -376,13 +392,13 @@ fun RecoveryBackupScreen(
                             imageVector = Icons.Default.Warning,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(28.dp)
                         )
                     },
                     title = {
                         Text(
-                            text = "Clipboard Alert",
-                            fontWeight = FontWeight.Bold,
+                            text = "Clipboard alert",
+                            fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center
                         )
                     },
@@ -400,20 +416,21 @@ fun RecoveryBackupScreen(
                                 showClipboardAlert = false
                                 Toast.makeText(context, "Recovery phrase copied to clipboard", Toast.LENGTH_SHORT).show()
                             },
-                            shape = RoundedCornerShape(24.dp),
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(48.dp)
+                                .height(44.dp)
                         ) {
-                            Text("Copy Anyway", fontWeight = FontWeight.SemiBold)
+                            Text("Copy anyway", fontWeight = FontWeight.SemiBold)
                         }
                     },
                     dismissButton = {
                         TextButton(
                             onClick = { showClipboardAlert = false },
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(48.dp)
+                                .height(44.dp)
                         ) {
                             Text("Cancel", fontWeight = FontWeight.Medium)
                         }
@@ -431,26 +448,31 @@ private fun WordGridCell(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+        ),
         modifier = modifier
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "%02d.".format(index + 1),
+                text = "%02d".format(index + 1),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold,
-                fontSize = 11.sp
+                fontSize = 10.sp
             )
-            Spacer(Modifier.width(4.dp))
+            Spacer(Modifier.width(6.dp))
             Text(
                 text = word,
                 style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
                 fontFamily = FontFamily.Monospace,
                 fontSize = 12.sp,
                 maxLines = 1

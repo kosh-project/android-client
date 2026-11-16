@@ -29,6 +29,9 @@ import project.kosh.core.network.ServerConfigurationStore
 import project.kosh.core.network.ServerHealthPinger
 import project.kosh.core.auth.DevicePairingManager
 import project.kosh.core.auth.PairingState
+import project.kosh.core.auth.SessionManager
+import project.kosh.core.crypto.MasterVaultKey
+import project.kosh.core.database.UserDataPurgeCoordinator
 import project.kosh.core.model.ActivePairingSession
 import project.kosh.core.model.PairingQrPayload
 import kotlinx.serialization.json.Json
@@ -61,6 +64,8 @@ sealed interface PingUiState {
  * @param mdnsDiscoveryManager Native mDNS manager for zero-config server discovery on local LAN.
  * @param serverHealthPinger Network service probing /health and measuring latency.
  * @param devicePairingManager E2EE ECDH device-to-device pairing manager.
+ * @param sessionManager Hardware-backed session and account metadata storage.
+ * @param userDataPurgeCoordinator Service managing complete local data wiping upon account switch.
  */
 @HiltViewModel
 class AuthViewModel @Inject constructor(
@@ -70,8 +75,35 @@ class AuthViewModel @Inject constructor(
     private val serverConfigStore: ServerConfigurationStore,
     private val mdnsDiscoveryManager: MdnsDiscoveryManager,
     private val serverHealthPinger: ServerHealthPinger,
-    private val devicePairingManager: DevicePairingManager
+    private val devicePairingManager: DevicePairingManager,
+    private val sessionManager: SessionManager? = null,
+    private val userDataPurgeCoordinator: UserDataPurgeCoordinator? = null
 ) : ViewModel() {
+
+    /**
+     * Enforces account isolation:
+     * - If registering a new account, purges previous database and thumbnail caches.
+     * - If logging in or linking to a different account than the last active account, purges database and caches.
+     * - If signing into the same account previously active, preserves database and disk cache.
+     */
+    internal suspend fun handleAccountTransition(vaultKey: MasterVaultKey?, isNewAccount: Boolean) {
+        val currentAccountId = if (vaultKey != null) {
+            sessionManager?.computeAccountId(vaultKey) ?: authRepository.computeAccountId(vaultKey)
+        } else null
+        val lastAccountId = sessionManager?.getLastActiveAccountId() ?: authRepository.getLastActiveAccountId()
+
+        val shouldPurge = isNewAccount ||
+            (lastAccountId != null && currentAccountId != null && lastAccountId != currentAccountId) ||
+            (lastAccountId == null && userDataPurgeCoordinator?.hasExistingUserData() == true && isNewAccount)
+
+        if (shouldPurge) {
+            userDataPurgeCoordinator?.purgeAllUserData()
+        }
+
+        if (currentAccountId != null) {
+            sessionManager?.saveLastActiveAccountId(currentAccountId) ?: authRepository.saveLastActiveAccountId(currentAccountId)
+        }
+    }
 
     /**
      * Coroutine dispatcher used for CPU-intensive cryptographic derivations.
@@ -174,6 +206,8 @@ class AuthViewModel @Inject constructor(
             try {
                 when (val result = authRepository.login(cleanUser, passphrase)) {
                     is NetworkResult.Success -> {
+                        val masterKey = authRepository.getVaultKey()
+                        handleAccountTransition(masterKey, isNewAccount = false)
                         _state.value = AuthUiState.Success(isNewRegistration = false)
                     }
                     is NetworkResult.Http -> {
@@ -220,6 +254,8 @@ class AuthViewModel @Inject constructor(
                         _state.value = AuthUiState.Loading("Authenticating session...")
                         when (val loginResult = authRepository.login(cleanUser, passphrase)) {
                             is NetworkResult.Success -> {
+                                val masterKey = authRepository.getVaultKey()
+                                handleAccountTransition(masterKey, isNewAccount = true)
                                 _state.value = AuthUiState.Success(isNewRegistration = true)
                             }
                             is NetworkResult.Http -> {
@@ -259,6 +295,10 @@ class AuthViewModel @Inject constructor(
             try {
                 when (val result = passkeyAuthManager.loginWithPasskey(activityContext, passphrase)) {
                     is PasskeyLoginResult.Success -> {
+                        val masterKey = result.masterVaultKey ?: authRepository.getVaultKey()
+                        if (masterKey != null) {
+                            handleAccountTransition(masterKey, isNewAccount = false)
+                        }
                         if (result.masterVaultKey != null || authRepository.isLoggedIn()) {
                             _state.value = AuthUiState.Success(isNewRegistration = false)
                         } else {
@@ -311,6 +351,8 @@ class AuthViewModel @Inject constructor(
                         val loginResult = authRepository.loginWithRecoveryPhrase(recoveryPhrase)
                         when (loginResult) {
                             is NetworkResult.Success -> {
+                                val masterKey = authRepository.getVaultKey()
+                                handleAccountTransition(masterKey, isNewAccount = true)
                                 _state.value = AuthUiState.Success(
                                     isNewRegistration = true,
                                     recoveryWords = recoveryWords
@@ -356,6 +398,10 @@ class AuthViewModel @Inject constructor(
             try {
                 when (val result = authRepository.loginWithRecoveryPhrase(cleanPhrase)) {
                     is NetworkResult.Success -> {
+                        val masterKey = authRepository.getVaultKey()
+                        if (masterKey != null) {
+                            handleAccountTransition(masterKey, isNewAccount = false)
+                        }
                         _state.value = AuthUiState.Success(isNewRegistration = false)
                     }
                     is NetworkResult.Http -> {
@@ -400,6 +446,7 @@ class AuthViewModel @Inject constructor(
                     passkeyAuthManager.unlockVaultWithPassphrase(wrappedVaultKey, passphrase)
                 }
                 if (unlockedKey != null) {
+                    handleAccountTransition(unlockedKey, isNewAccount = false)
                     _state.value = AuthUiState.Success(isNewRegistration = false)
                 } else {
                     _state.value = AuthUiState.VaultUnlockRequired(
@@ -539,6 +586,10 @@ class AuthViewModel @Inject constructor(
                         pState.registrationTicket?.let { ticket ->
                             _lastRegistrationTicket.value = ticket
                         }
+                        val masterKey = pState.vaultKey ?: authRepository.getVaultKey()
+                        if (masterKey != null) {
+                            handleAccountTransition(masterKey, isNewAccount = false)
+                        }
                         refreshStoredCredentials()
                         val isVaultUnlock = _state.value is AuthUiState.VaultUnlockRequired
                         val isNewDevice = !isVaultUnlock && !pState.registrationTicket.isNullOrBlank()
@@ -652,6 +703,10 @@ class AuthViewModel @Inject constructor(
                             pState.registrationTicket?.let { ticket ->
                                 _lastRegistrationTicket.value = ticket
                             }
+                            val masterKey = pState.vaultKey ?: authRepository.getVaultKey()
+                            if (masterKey != null) {
+                                handleAccountTransition(masterKey, isNewAccount = false)
+                            }
                             refreshStoredCredentials()
                             val isNewDevice = !wasVaultUnlock && !pState.registrationTicket.isNullOrBlank()
                             _state.value = AuthUiState.Success(isNewRegistration = isNewDevice)
@@ -717,6 +772,10 @@ class AuthViewModel @Inject constructor(
                     if (pState is PairingState.Success) {
                         pState.registrationTicket?.let { ticket ->
                             _lastRegistrationTicket.value = ticket
+                        }
+                        val masterKey = pState.vaultKey ?: authRepository.getVaultKey()
+                        if (masterKey != null) {
+                            handleAccountTransition(masterKey, isNewAccount = false)
                         }
                         refreshStoredCredentials()
                         val isNewDevice = !wasVaultUnlock && !pState.registrationTicket.isNullOrBlank()

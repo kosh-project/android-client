@@ -25,6 +25,7 @@ android {
 dependencies {
     implementation(project(":core:auth"))
     implementation(project(":core:crypto"))
+    implementation(project(":core:database"))
     implementation(project(":core:model"))
     implementation(project(":core:network"))
     implementation(libs.kotlinx.serialization.json)

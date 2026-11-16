@@ -104,5 +104,26 @@ class AesGcmEnvelopeTest {
         val decrypted = AesGcmEnvelope.decrypt(outputStream.toByteArray(), dek)
         assertEquals(0, decrypted.size)
     }
+
+    @Test
+    fun generateIv_producesDistinct12ByteIv() {
+        val iv1 = AesGcmEnvelope.generateIv()
+        val iv2 = AesGcmEnvelope.generateIv()
+
+        assertEquals(AesGcmEnvelope.IV_SIZE_BYTES, iv1.size)
+        assertEquals(AesGcmEnvelope.IV_SIZE_BYTES, iv2.size)
+        assert(!iv1.contentEquals(iv2))
+    }
+
+    @Test
+    fun createEncryptCipher_initsValidCipher() {
+        val key = ByteArray(32) { 1 }
+        val iv = AesGcmEnvelope.generateIv()
+        val cipher = AesGcmEnvelope.createEncryptCipher(key, iv)
+
+        val plaintext = "test streaming payload".toByteArray()
+        val ciphertextAndTag = cipher.doFinal(plaintext)
+        assert(ciphertextAndTag.isNotEmpty())
+    }
 }
 

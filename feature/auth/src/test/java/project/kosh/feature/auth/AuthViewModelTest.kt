@@ -2,6 +2,7 @@ package project.kosh.feature.auth
 
 import android.content.Context
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
@@ -48,6 +49,8 @@ class AuthViewModelTest {
     private lateinit var mockMdnsManager: MdnsDiscoveryManager
     private lateinit var mockHealthPinger: ServerHealthPinger
     private lateinit var mockDevicePairingManager: DevicePairingManager
+    private lateinit var mockSessionManager: project.kosh.core.auth.SessionManager
+    private lateinit var mockUserDataPurgeCoordinator: project.kosh.core.database.UserDataPurgeCoordinator
 
     private lateinit var viewModel: AuthViewModel
 
@@ -62,8 +65,12 @@ class AuthViewModelTest {
         mockMdnsManager = mockk(relaxed = true)
         mockHealthPinger = mockk(relaxed = true)
         mockDevicePairingManager = mockk(relaxed = true)
+        mockSessionManager = mockk(relaxed = true)
+        mockUserDataPurgeCoordinator = mockk(relaxed = true)
 
         every { mockMdnsManager.discoverServers() } returns flowOf(emptyList())
+        every { mockSessionManager.getLastActiveAccountId() } returns null
+        every { mockRepository.getLastActiveAccountId() } returns null
 
         viewModel = AuthViewModel(
             authRepository = mockRepository,
@@ -72,7 +79,9 @@ class AuthViewModelTest {
             serverConfigStore = mockServerConfigStore,
             mdnsDiscoveryManager = mockMdnsManager,
             serverHealthPinger = mockHealthPinger,
-            devicePairingManager = mockDevicePairingManager
+            devicePairingManager = mockDevicePairingManager,
+            sessionManager = mockSessionManager,
+            userDataPurgeCoordinator = mockUserDataPurgeCoordinator
         ).apply {
             defaultDispatcher = testDispatcher
         }
@@ -982,6 +991,45 @@ class AuthViewModelTest {
 
         assertTrue(viewModel.state.value is AuthUiState.Idle)
         verify(exactly = 1) { mockRepository.logout() }
+    }
+
+    @Test
+    fun `when new account is created, previous user data and cache are purged`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockSessionManager.getLastActiveAccountId() } returns "old-account-sha256"
+        every { mockSessionManager.computeAccountId(any()) } returns "new-account-sha256"
+
+        viewModel.handleAccountTransition(masterKey, isNewAccount = true)
+
+        coVerify(exactly = 1) { mockUserDataPurgeCoordinator.purgeAllUserData() }
+        verify(exactly = 1) { mockSessionManager.saveLastActiveAccountId("new-account-sha256") }
+        masterKey.close()
+    }
+
+    @Test
+    fun `when logging into different account, previous user data is purged`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockSessionManager.getLastActiveAccountId() } returns "account-alpha-id"
+        every { mockSessionManager.computeAccountId(any()) } returns "account-beta-id"
+
+        viewModel.handleAccountTransition(masterKey, isNewAccount = false)
+
+        coVerify(exactly = 1) { mockUserDataPurgeCoordinator.purgeAllUserData() }
+        verify(exactly = 1) { mockSessionManager.saveLastActiveAccountId("account-beta-id") }
+        masterKey.close()
+    }
+
+    @Test
+    fun `when signing back into same account, user data and database are preserved`() = runTest {
+        val masterKey = MasterVaultKey.generate()
+        every { mockSessionManager.getLastActiveAccountId() } returns "same-account-id"
+        every { mockSessionManager.computeAccountId(any()) } returns "same-account-id"
+
+        viewModel.handleAccountTransition(masterKey, isNewAccount = false)
+
+        coVerify(exactly = 0) { mockUserDataPurgeCoordinator.purgeAllUserData() }
+        verify(exactly = 1) { mockSessionManager.saveLastActiveAccountId("same-account-id") }
+        masterKey.close()
     }
 
     @After

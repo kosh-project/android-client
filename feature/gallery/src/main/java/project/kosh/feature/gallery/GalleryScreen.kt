@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VectorConverter
@@ -18,6 +19,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -62,6 +64,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FabPosition
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -320,50 +323,30 @@ fun GalleryScreen(
     }
 
     Scaffold(
+        floatingActionButtonPosition = FabPosition.Center,
         topBar = {
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Vault",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Spacer(Modifier.width(8.dp))
                         Surface(
                             shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primaryContainer,
-                            modifier = Modifier.size(36.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = "Encrypted Vault",
-                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column {
+                            color = if (isSessionActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(6.dp)
+                        ) {}
+                        if (!activeUser.isNullOrBlank()) {
+                            Spacer(Modifier.width(6.dp))
                             Text(
-                                text = "Vault",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
+                                text = activeUser.orEmpty(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = if (isSessionActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(6.dp)
-                                ) {}
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = if (!activeUser.isNullOrBlank()) {
-                                        "$activeUser • Active"
-                                    } else if (isSessionActive) {
-                                        "Hardware Vault Active"
-                                    } else {
-                                        "Session Locked"
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
                         }
                     }
                 },
@@ -500,24 +483,45 @@ fun GalleryScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = MaterialTheme.colorScheme.background,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surface
                 )
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                expanded = isFabExpanded,
-                onClick = {
-                    photoPickerLauncher.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+            Column(
+                horizontalAlignment = Alignment.End,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .animateContentSize(
+                        animationSpec = spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                        )
                     )
-                },
-                icon = {
-                    Icon(Icons.Default.Add, contentDescription = "Upload Media")
-                },
-                text = { Text("Upload") },
-                shape = RoundedCornerShape(16.dp)
-            )
+            ) {
+                ExtendedFloatingActionButton(
+                    expanded = isFabExpanded,
+                    onClick = {
+                        photoPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        )
+                    },
+                    icon = {
+                        Icon(Icons.Default.Add, contentDescription = "Upload Media")
+                    },
+                    text = { Text("Upload", fontWeight = FontWeight.SemiBold, fontSize = 15.sp) },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.padding(bottom = if (batchUploadState.isUploading) 10.dp else 0.dp)
+                )
+
+                FloatingUploadBar(
+                    batchState = batchUploadState,
+                    onDismiss = { viewModel.dismissBatchBar() },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
     ) { innerPadding ->
         val coroutineScope = rememberCoroutineScope()
@@ -690,61 +694,63 @@ fun GalleryScreen(
                     Surface(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.size(96.dp)
+                        modifier = Modifier.size(56.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = Icons.Default.Lock,
                                 contentDescription = "Empty Vault",
                                 tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(44.dp)
+                                modifier = Modifier.size(28.dp)
                             )
                         }
                     }
 
-                    Spacer(Modifier.height(24.dp))
+                    Spacer(Modifier.height(16.dp))
 
                     Text(
-                        text = "Nothing uploaded yet",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
+                        text = "No items yet",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
                         textAlign = TextAlign.Center
                     )
 
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(6.dp))
 
                     Text(
-                        text = "Your private storage vault is currently empty. Photos and documents you upload will be chunked, encrypted with AES-256-GCM, and stored in your node's Content-Addressable Storage.",
+                        text = "Photos and documents you upload are encrypted and stored in your vault.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
-                        lineHeight = 22.sp,
-                        modifier = Modifier.padding(horizontal = 16.dp)
+                        lineHeight = 20.sp,
+                        modifier = Modifier.padding(horizontal = 24.dp)
                     )
 
-                    Spacer(Modifier.height(32.dp))
+                    Spacer(Modifier.height(24.dp))
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Button(
                             onClick = {
                                 photoPickerLauncher.launch(
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
                                 )
                             },
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.height(44.dp)
                         ) {
                             Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Select Photos")
+                            Text("Select photos", fontWeight = FontWeight.SemiBold)
                         }
 
                         OutlinedButton(
                             onClick = { viewModel.openFolderSelection() },
-                            shape = RoundedCornerShape(12.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.height(44.dp)
                         ) {
                             Icon(Icons.Default.FolderShared, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Sync Folders")
+                            Text("Sync folders", fontWeight = FontWeight.Medium)
                         }
                     }
                 }
@@ -909,14 +915,6 @@ fun GalleryScreen(
             }
         }
 
-            // Bottom Floating Batch Upload Bar (Music Player Style)
-            FloatingUploadBar(
-                batchState = batchUploadState,
-                onDismiss = { viewModel.dismissBatchBar() },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 80.dp) // Pinned safely above Extended FAB
-            )
         }
     }
 
@@ -1070,10 +1068,10 @@ fun GalleryScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(52.dp),
-                        shape = RoundedCornerShape(26.dp)
+                            .height(48.dp),
+                        shape = RoundedCornerShape(10.dp)
                     ) {
-                        Text("Done", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("Done", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                     }
                 } else {
                     val currentMailboxId = activePairingSession?.mailboxId
@@ -1106,12 +1104,12 @@ fun GalleryScreen(
                             onClick = { viewModel.startHostPairing() },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(50.dp),
-                            shape = RoundedCornerShape(25.dp)
+                                .height(48.dp),
+                            shape = RoundedCornerShape(10.dp)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Retry Pairing")
+                            Text("Retry pairing")
                         }
                         Spacer(Modifier.height(8.dp))
                         TextButton(
@@ -1119,6 +1117,7 @@ fun GalleryScreen(
                                 viewModel.stopHostPairing()
                                 showLinkDeviceBottomSheet = false
                             },
+                            shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("Close", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1141,8 +1140,9 @@ fun GalleryScreen(
                                 }
 
                                 Surface(
-                                    shape = RoundedCornerShape(16.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = MaterialTheme.colorScheme.surface,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable(enabled = !isSessionExpired) {
@@ -1155,10 +1155,9 @@ fun GalleryScreen(
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
-                                            text = "PAIRING CODE",
+                                            text = "Pairing code",
                                             style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            letterSpacing = 1.sp
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                         Spacer(Modifier.height(4.dp))
                                         Text(
@@ -1166,7 +1165,7 @@ fun GalleryScreen(
                                             style = MaterialTheme.typography.headlineMedium,
                                             fontWeight = FontWeight.Bold,
                                             fontFamily = FontFamily.Monospace,
-                                            letterSpacing = 3.sp,
+                                            letterSpacing = 2.sp,
                                             color = MaterialTheme.colorScheme.primary
                                         )
                                     }
@@ -1184,8 +1183,9 @@ fun GalleryScreen(
 
                                 if (qrBitmap != null) {
                                     Surface(
-                                        shape = RoundedCornerShape(20.dp),
+                                        shape = RoundedCornerShape(12.dp),
                                         color = MaterialTheme.colorScheme.surface,
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
                                         shadowElevation = 2.dp,
                                         modifier = Modifier.size(210.dp)
                                     ) {
@@ -1217,8 +1217,9 @@ fun GalleryScreen(
 
                             if (expiredOverlayAlpha > 0f) {
                                 Surface(
-                                    shape = RoundedCornerShape(16.dp),
+                                    shape = RoundedCornerShape(12.dp),
                                     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f * expiredOverlayAlpha),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
                                     tonalElevation = 6.dp,
                                     shadowElevation = 4.dp,
                                     modifier = Modifier
@@ -1231,22 +1232,22 @@ fun GalleryScreen(
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Surface(
-                                            shape = CircleShape,
+                                            shape = RoundedCornerShape(10.dp),
                                             color = MaterialTheme.colorScheme.errorContainer,
-                                            modifier = Modifier.size(44.dp)
+                                            modifier = Modifier.size(40.dp)
                                         ) {
                                             Box(contentAlignment = Alignment.Center) {
                                                 Icon(
                                                     imageVector = Icons.Default.Warning,
                                                     contentDescription = "Expired",
                                                     tint = MaterialTheme.colorScheme.onErrorContainer,
-                                                    modifier = Modifier.size(24.dp)
+                                                    modifier = Modifier.size(20.dp)
                                                 )
                                             }
                                         }
                                         Spacer(Modifier.height(10.dp))
                                         Text(
-                                            text = "Pairing Session Expired",
+                                            text = "Pairing session expired",
                                             style = MaterialTheme.typography.titleMedium,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface
@@ -1263,12 +1264,12 @@ fun GalleryScreen(
                                             onClick = {
                                                 viewModel.startHostPairing()
                                             },
-                                            shape = RoundedCornerShape(24.dp),
-                                            modifier = Modifier.height(48.dp)
+                                            shape = RoundedCornerShape(10.dp),
+                                            modifier = Modifier.height(44.dp)
                                         ) {
                                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                             Spacer(Modifier.width(8.dp))
-                                            Text("Generate New Code")
+                                            Text("Generate new code")
                                         }
                                     }
                                 }
@@ -1299,22 +1300,22 @@ fun GalleryScreen(
                                         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                                     }
                                 },
-                                shape = RoundedCornerShape(20.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(44.dp)
                             ) {
-                                Text("Scan Camera QR", fontSize = 13.sp)
+                                Text("Scan camera QR", fontSize = 13.sp)
                             }
 
                             OutlinedButton(
                                 onClick = { showManualCodeEntry = !showManualCodeEntry },
-                                shape = RoundedCornerShape(20.dp),
+                                shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier
                                     .weight(1f)
                                     .height(44.dp)
                             ) {
-                                Text(if (showManualCodeEntry) "Hide Code" else "Enter Code", fontSize = 13.sp)
+                                Text(if (showManualCodeEntry) "Hide code" else "Enter code", fontSize = 13.sp)
                             }
                         }
 
@@ -1327,17 +1328,17 @@ fun GalleryScreen(
                                 OutlinedTextField(
                                     value = manualPairingCode,
                                     onValueChange = { manualPairingCode = it },
-                                    label = { Text("8-Character Code") },
+                                    label = { Text("8-character code") },
                                     singleLine = true,
                                     modifier = Modifier.weight(1f),
-                                    shape = RoundedCornerShape(12.dp)
+                                    shape = RoundedCornerShape(10.dp)
                                 )
                                 Spacer(Modifier.width(8.dp))
                                 Button(
                                     onClick = { viewModel.fulfillReceiverCode(manualPairingCode) },
                                     enabled = manualPairingCode.trim().replace("-", "").replace(" ", "").length == 8,
-                                    shape = RoundedCornerShape(12.dp),
-                                    modifier = Modifier.height(54.dp)
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.height(48.dp)
                                 ) {
                                     Text("Link")
                                 }

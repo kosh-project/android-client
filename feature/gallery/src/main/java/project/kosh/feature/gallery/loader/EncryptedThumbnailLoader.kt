@@ -36,7 +36,8 @@ import javax.inject.Singleton
 @Singleton
 class EncryptedThumbnailLoader @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val assetClient: AssetClient
+    private val assetClient: AssetClient,
+    private val purgeCoordinator: project.kosh.core.database.UserDataPurgeCoordinator? = null
 ) {
     private val maxMemoryBytes = 32 * 1024 * 1024 // 32 MB
     internal val memoryCache = object : LruCache<String, Bitmap>(maxMemoryBytes) {
@@ -45,6 +46,13 @@ class EncryptedThumbnailLoader @Inject constructor(
 
     internal val diskCacheDir = File(context.cacheDir, "kosh_thumbnails").apply { mkdirs() }
     private val downloadSemaphore = Semaphore(4)
+
+    init {
+        purgeCoordinator?.registerListener {
+            clearMemoryCache()
+            clearDiskCache()
+        }
+    }
 
     private fun calculateInSampleSize(
         contentResolver: ContentResolver,

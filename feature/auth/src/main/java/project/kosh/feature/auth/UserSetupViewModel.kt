@@ -82,6 +82,11 @@ class UserSetupViewModel @Inject constructor(
                         sessionManager.clearRegistrationTicket()
                         when (val loginResult = passkeyAuthManager.loginWithPasskey(activityContext)) {
                             is PasskeyLoginResult.Success -> {
+                                val vKey = loginResult.masterVaultKey ?: sessionManager?.getVaultKey()
+                                if (vKey != null && sessionManager != null) {
+                                    val accId = sessionManager.computeAccountId(vKey)
+                                    sessionManager.saveLastActiveAccountId(accId)
+                                }
                                 _enrollmentState.value = PasskeyEnrollmentState.Enrolled
                             }
                             is PasskeyLoginResult.Cancelled -> {
@@ -103,6 +108,11 @@ class UserSetupViewModel @Inject constructor(
                 // Passkey was already registered (e.g. prompt was cancelled on the subsequent login ceremony); complete sign-in
                 when (val loginResult = passkeyAuthManager.loginWithPasskey(activityContext)) {
                     is PasskeyLoginResult.Success -> {
+                        val vKey = loginResult.masterVaultKey ?: sessionManager?.getVaultKey()
+                        if (vKey != null && sessionManager != null) {
+                            val accId = sessionManager.computeAccountId(vKey)
+                            sessionManager.saveLastActiveAccountId(accId)
+                        }
                         _enrollmentState.value = PasskeyEnrollmentState.Enrolled
                     }
                     is PasskeyLoginResult.Cancelled -> {

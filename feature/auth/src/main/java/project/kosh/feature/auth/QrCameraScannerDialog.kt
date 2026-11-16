@@ -237,11 +237,11 @@ fun QrCameraScannerDialog(
                 Box(
                     modifier = Modifier
                         .size(280.dp)
-                        .clip(RoundedCornerShape(24.dp))
+                        .clip(RoundedCornerShape(16.dp))
                         .border(
                             width = 3.dp,
                             color = MaterialTheme.colorScheme.primary,
-                            shape = RoundedCornerShape(24.dp)
+                            shape = RoundedCornerShape(16.dp)
                         )
                 )
 
@@ -249,7 +249,7 @@ fun QrCameraScannerDialog(
 
                 // Title and instructions
                 Text(
-                    text = "Scan Server QR Code",
+                    text = "Scan server QR code",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = Color.White,
