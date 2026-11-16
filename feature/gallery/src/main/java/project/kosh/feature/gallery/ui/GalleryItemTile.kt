@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -63,7 +64,8 @@ fun GalleryItemTile(
     uploadStage: UploadStage?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    isLoading: Boolean = false
+    isLoading: Boolean = false,
+    isSyncingRemote: Boolean = false
 ) {
     var showCompletedFlash by remember { mutableStateOf(false) }
 
@@ -81,6 +83,12 @@ fun GalleryItemTile(
     }
 
     val isVideo = item.asset.mediaType.startsWith("video/", ignoreCase = true)
+    val hasInitialThumbnail = remember { thumbnail != null }
+    val animatedThumbnailAlpha by animateFloatAsState(
+        targetValue = if (thumbnail != null) 1f else 0f,
+        animationSpec = tween(durationMillis = if (hasInitialThumbnail) 0 else 220),
+        label = "thumbnailAlpha"
+    )
 
     Box(
         modifier = modifier
@@ -88,21 +96,51 @@ fun GalleryItemTile(
             .clip(RoundedCornerShape(4.dp))
             .clickable(onClick = onClick)
     ) {
-        // Base: Decoded Thumbnail or Shimmer Placeholder / Static Fallback
+        // Base Layer: Quiet Neutral Placeholder Surface & Remote Sync Indicator
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isSyncingRemote && thumbnail == null) {
+                // Show rotating progress indicator only for items actively being fetched/synced from remote server
+                CircularProgressIndicator(
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(24.dp),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            } else if (thumbnail == null || animatedThumbnailAlpha < 1f) {
+                // Static neutral placeholder icon fading out smoothly as thumbnail cross-fades in
+                Icon(
+                    imageVector = if (isVideo) Icons.Default.PlayArrow else Icons.Default.Image,
+                    contentDescription = if (isVideo) "Video" else "Image",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                        alpha = 0.35f * (1f - animatedThumbnailAlpha)
+                    ),
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+
+        // Thumbnail Image Layer (smoothly cross-fades over placeholder)
         if (thumbnail != null) {
             Image(
                 bitmap = thumbnail.asImageBitmap(),
                 contentDescription = item.asset.fileId,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = animatedThumbnailAlpha }
             )
             if (isVideo) {
                 Surface(
                     shape = RoundedCornerShape(4.dp),
-                    color = Color.Black.copy(alpha = 0.6f),
+                    color = Color.Black.copy(alpha = 0.6f * animatedThumbnailAlpha),
                     modifier = Modifier
                         .padding(6.dp)
                         .align(Alignment.BottomStart)
+                        .graphicsLayer { alpha = animatedThumbnailAlpha }
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -116,33 +154,6 @@ fun GalleryItemTile(
                         )
                     }
                 }
-            }
-        } else if (isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(
-                    strokeWidth = 2.dp,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        } else {
-            // Not loading and thumbnail is null: render quiet placeholder instead of infinite spinner
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = if (isVideo) Icons.Default.PlayArrow else Icons.Default.Image,
-                    contentDescription = if (isVideo) "Video" else "Image",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                    modifier = Modifier.size(28.dp)
-                )
             }
         }
 

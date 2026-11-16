@@ -1148,6 +1148,77 @@ class GalleryViewModelTest {
         testDispatcher.scheduler.advanceUntilIdle()
     }
 
+    @Test
+    fun `loadThumbnailStaggered returns immediately when thumbnail is in memory cache`() = runTest {
+        val mockBitmap: Bitmap = mockk(relaxed = true)
+        val mockItem: MediaWithCryptoDetails = mockk(relaxed = true) {
+            every { asset.fileId } returns "test-file-l1"
+        }
+        every { mockThumbnailLoader.getFromMemoryCache("test-file-l1") } returns mockBitmap
+
+        val result = viewModel.loadThumbnailStaggered(mockItem)
+
+        assertEquals(mockBitmap, result)
+        coVerify(exactly = 0) { mockThumbnailLoader.loadThumbnail(any(), any()) }
+    }
+
+    @Test
+    fun `loadThumbnailStaggered delegates to loadThumbnail for disk cache and paces emission`() = runTest {
+        val mockBitmap: Bitmap = mockk(relaxed = true)
+        val mockKey = MasterVaultKey(ByteArray(32) { 1 })
+        val mockItem: MediaWithCryptoDetails = mockk(relaxed = true) {
+            every { asset.fileId } returns "test-file-disk"
+        }
+        every { mockThumbnailLoader.getFromMemoryCache("test-file-disk") } returns null
+        every { mockThumbnailLoader.hasDiskCache("test-file-disk") } returns true
+        every { mockAuthRepository.getVaultKey() } returns mockKey
+        coEvery { mockThumbnailLoader.loadThumbnail(mockItem, mockKey) } returns mockBitmap
+
+        val result = viewModel.loadThumbnailStaggered(mockItem)
+
+        assertEquals(mockBitmap, result)
+        coVerify(exactly = 1) { mockThumbnailLoader.loadThumbnail(mockItem, mockKey) }
+    }
+
+    @Test
+    fun `loadThumbnailStaggered delegates to loadThumbnail for remote sync and paces emission`() = runTest {
+        val mockBitmap: Bitmap = mockk(relaxed = true)
+        val mockKey = MasterVaultKey(ByteArray(32) { 1 })
+        val mockItem: MediaWithCryptoDetails = mockk(relaxed = true) {
+            every { asset.fileId } returns "test-file-remote"
+        }
+        every { mockThumbnailLoader.getFromMemoryCache("test-file-remote") } returns null
+        every { mockThumbnailLoader.hasDiskCache("test-file-remote") } returns false
+        every { mockAuthRepository.getVaultKey() } returns mockKey
+        coEvery { mockThumbnailLoader.loadThumbnail(mockItem, mockKey) } returns mockBitmap
+
+        val result = viewModel.loadThumbnailStaggered(mockItem)
+
+        assertEquals(mockBitmap, result)
+        coVerify(exactly = 1) { mockThumbnailLoader.loadThumbnail(mockItem, mockKey) }
+    }
+
+    @Test
+    fun `hasDiskCache delegates to thumbnailLoader`() {
+        every { mockThumbnailLoader.hasDiskCache("disk-file-1") } returns true
+        every { mockThumbnailLoader.hasDiskCache("disk-file-2") } returns false
+
+        assertTrue(viewModel.hasDiskCache("disk-file-1"))
+        assertFalse(viewModel.hasDiskCache("disk-file-2"))
+        verify(exactly = 1) { mockThumbnailLoader.hasDiskCache("disk-file-1") }
+        verify(exactly = 1) { mockThumbnailLoader.hasDiskCache("disk-file-2") }
+    }
+
+    @Test
+    fun `isInFlight returns true for enqueued uploads and false when not present`() = runTest {
+        val contentResolver: ContentResolver = mockk(relaxed = true)
+        val uri: Uri = mockk(relaxed = true)
+        every { uri.toString() } returns "content://media/test_inflight_lookup"
+        every { contentResolver.getType(uri) } returns "image/png"
+
+        assertFalse(viewModel.isInFlight("non-existent-id"))
+    }
+
     @After
     fun teardown() {
         Dispatchers.resetMain()

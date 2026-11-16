@@ -65,6 +65,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FabPosition
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -278,13 +279,15 @@ fun GalleryScreen(
             }
 
             val now = System.currentTimeMillis()
-            val dt = (now - lastTime).coerceAtLeast(1)
+            val dt = now - lastTime
+            if (dt < 16L) return@collect // Filter sub-frame jitter
+
             val deltaItems = index - lastIndex
             val deltaOffset = offset - lastOffset
             val approxDeltaPx = kotlin.math.abs(deltaItems * 250 + deltaOffset)
             val velocity = (approxDeltaPx * 1000L) / dt
 
-            val isFast = velocity > 1200L || (isScrollingFast.value && velocity > 400L)
+            val isFast = velocity > 1200L || (isScrollingFast.value && velocity > 60L)
             isScrollingFast.value = isFast
 
             resetJob?.cancel()
@@ -541,13 +544,7 @@ fun GalleryScreen(
                 horizontalAlignment = Alignment.End,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .animateContentSize(
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioMediumBouncy,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    )
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
                 ExtendedFloatingActionButton(
                     expanded = isFabExpanded,
@@ -561,6 +558,12 @@ fun GalleryScreen(
                     },
                     text = { Text("Upload", fontWeight = FontWeight.SemiBold, fontSize = 15.sp) },
                     shape = RoundedCornerShape(14.dp),
+                    elevation = FloatingActionButtonDefaults.elevation(
+                        defaultElevation = 6.dp,
+                        pressedElevation = 8.dp,
+                        focusedElevation = 6.dp,
+                        hoveredElevation = 7.dp
+                    ),
                     modifier = Modifier.padding(bottom = if (batchUploadState.isUploading) 10.dp else 0.dp)
                 )
 
@@ -861,16 +864,25 @@ fun GalleryScreen(
                         items(group.items, key = { it.asset.fileId }) { item ->
                             val cachedBitmap = remember(item.asset.fileId) { viewModel.getFromMemoryCache(item) }
                             var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf(cachedBitmap) }
-                            var isLoadingThumbnail by remember(item.asset.fileId) { mutableStateOf(cachedBitmap == null) }
+                            var isSyncingRemote by remember(item.asset.fileId) { mutableStateOf(false) }
 
                             if (thumbnailBitmap == null) {
                                 LaunchedEffect(item.asset.fileId) {
                                     if (isScrollingFast.value) {
                                         snapshotFlow { isScrollingFast.value }.first { !it }
                                     }
-                                    isLoadingThumbnail = true
-                                    thumbnailBitmap = viewModel.loadThumbnail(item)
-                                    isLoadingThumbnail = false
+                                    val needsRemoteDownload = !viewModel.hasDiskCache(item.asset.fileId) &&
+                                        !viewModel.isInFlight(item.asset.fileId) &&
+                                        (item.cryptoMapping?.thumbnailCiphertextHash != null || item.asset.thumbnailHash != null)
+
+                                    if (needsRemoteDownload) {
+                                        isSyncingRemote = true
+                                    }
+                                    try {
+                                        thumbnailBitmap = viewModel.loadThumbnailStaggered(item)
+                                    } finally {
+                                        isSyncingRemote = false
+                                    }
                                 }
                             }
 
@@ -879,7 +891,7 @@ fun GalleryScreen(
                             GalleryItemTile(
                                 item = item,
                                 thumbnail = thumbnailBitmap,
-                                isLoading = isLoadingThumbnail,
+                                isSyncingRemote = isSyncingRemote,
                                 uploadStage = uploadStage,
                                 onClick = {
                                     // Fullscreen viewer deferred to next iteration

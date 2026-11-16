@@ -23,6 +23,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeoutOrNull
@@ -567,6 +569,64 @@ class GalleryViewModel @Inject constructor(
         }
         val masterKey = authRepository.getVaultKey()
         return thumbnailLoader.loadThumbnail(item, masterKey)
+    }
+
+    /**
+     * Checks if the given fileId is currently an in-flight upload queued from local storage.
+     */
+    fun isInFlight(fileId: String): Boolean = _inFlightUploads.value.containsKey(fileId)
+
+    /**
+     * Checks if a decrypted WebP thumbnail already exists in the local L2 disk cache.
+     */
+    fun hasDiskCache(fileId: String): Boolean = thumbnailLoader.hasDiskCache(fileId)
+
+    private val thumbnailStaggerMutex = Mutex()
+    private var lastStaggerEpochMs = 0L
+
+    /**
+     * Resolves a thumbnail bitmap for the given [item] with throttled state emission pacing
+     * to eliminate frame hitching during fling deceleration and ensure tiles smoothly cascade in.
+     */
+    suspend fun loadThumbnailStaggered(item: MediaWithCryptoDetails): Bitmap? {
+        val cached = getFromMemoryCache(item)
+        if (cached != null) return cached
+
+        val hasDisk = hasDiskCache(item.asset.fileId) || isInFlight(item.asset.fileId)
+
+        return if (hasDisk) {
+            // For local disk / in-flight items, serialize decoding with staggered pacing
+            // so we decode and emit one by one with a smooth ~20ms cadence
+            thumbnailStaggerMutex.withLock {
+                val rechecked = getFromMemoryCache(item)
+                if (rechecked != null) return@withLock rechecked
+
+                val now = System.currentTimeMillis()
+                val elapsed = (now - lastStaggerEpochMs).coerceAtLeast(0L)
+                val minGapMs = 20L
+                if (elapsed < minGapMs) {
+                    delay(minGapMs - elapsed)
+                }
+
+                val bitmap = loadThumbnail(item)
+                lastStaggerEpochMs = System.currentTimeMillis()
+                bitmap
+            }
+        } else {
+            // For remote items, perform network download asynchronously without holding the stagger lock
+            val bitmap = loadThumbnail(item) ?: return null
+            // Throttle state emission so remote arrivals also cascade smoothly into UI
+            thumbnailStaggerMutex.withLock {
+                val now = System.currentTimeMillis()
+                val elapsed = (now - lastStaggerEpochMs).coerceAtLeast(0L)
+                val minGapMs = 20L
+                if (elapsed < minGapMs) {
+                    delay(minGapMs - elapsed)
+                }
+                lastStaggerEpochMs = System.currentTimeMillis()
+            }
+            bitmap
+        }
     }
 
     /**
