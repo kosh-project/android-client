@@ -93,12 +93,14 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
@@ -269,54 +271,8 @@ fun GalleryScreen(
         }
     }
 
-    val isScrollingFast = remember { mutableStateOf(false) }
-
-    LaunchedEffect(gridState) {
-        var lastTime = System.currentTimeMillis()
-        var lastIndex = gridState.firstVisibleItemIndex
-        var lastOffset = gridState.firstVisibleItemScrollOffset
-        var resetJob: kotlinx.coroutines.Job? = null
-        snapshotFlow {
-            Triple(
-                gridState.isScrollInProgress,
-                gridState.firstVisibleItemIndex,
-                gridState.firstVisibleItemScrollOffset
-            )
-        }.collect { (inProgress, index, offset) ->
-            if (!inProgress) {
-                resetJob?.cancel()
-                isScrollingFast.value = false
-                lastTime = System.currentTimeMillis()
-                lastIndex = index
-                lastOffset = offset
-                return@collect
-            }
-
-            val now = System.currentTimeMillis()
-            val dt = now - lastTime
-            if (dt < 16L) return@collect // Filter sub-frame jitter
-
-            val deltaItems = index - lastIndex
-            val deltaOffset = offset - lastOffset
-            val approxDeltaPx = kotlin.math.abs(deltaItems * 250 + deltaOffset)
-            val velocity = (approxDeltaPx * 1000L) / dt
-
-            val isFast = velocity > 1200L || (isScrollingFast.value && velocity > 60L)
-            isScrollingFast.value = isFast
-
-            resetJob?.cancel()
-            if (isFast) {
-                resetJob = launch {
-                    delay(150L)
-                    isScrollingFast.value = false
-                }
-            }
-
-            lastTime = now
-            lastIndex = index
-            lastOffset = offset
-        }
-    }
+    var targetScrollDelta by remember { mutableFloatStateOf(0f) }
+    var scrollJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     val groupedGalleryItems = remember(galleryItems) {
         val zoneId = ZoneId.systemDefault()
@@ -687,6 +643,37 @@ fun GalleryScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.type == PointerEventType.Scroll) {
+                                        val deltaY = event.changes.fold(0f) { acc, change ->
+                                            acc + change.scrollDelta.y
+                                        } * 64f
+
+                                        if (deltaY != 0f) {
+                                            targetScrollDelta += deltaY
+                                            if (scrollJob?.isActive != true) {
+                                                scrollJob = coroutineScope.launch {
+                                                    while (kotlin.math.abs(targetScrollDelta) > 0.5f) {
+                                                        val step = targetScrollDelta * 0.35f
+                                                        targetScrollDelta -= step
+                                                        val consumed = gridState.dispatchRawDelta(step)
+                                                        if (kotlin.math.abs(consumed) < 0.1f) {
+                                                            targetScrollDelta = 0f
+                                                            break
+                                                        }
+                                                        withFrameNanos { }
+                                                    }
+                                                    targetScrollDelta = 0f
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        .pointerInput(Unit) {
                             awaitEachGesture {
                                 awaitFirstDown(requireUnconsumed = false)
                                 var accumulatedZoom = 1f
@@ -737,16 +724,20 @@ fun GalleryScreen(
                             }
                         }
 
-                        items(group.items, key = { it.asset.fileId }) { item ->
+                        items(
+                            items = group.items,
+                            key = { it.asset.fileId },
+                            contentType = { if (it.asset.mediaType.startsWith("video/", ignoreCase = true)) "video" else "photo" }
+                        ) { item ->
                             val cachedBitmap = remember(item.asset.fileId) { viewModel.getFromMemoryCache(item) }
                             var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf(cachedBitmap) }
                             var isSyncingRemote by remember(item.asset.fileId) { mutableStateOf(false) }
 
                             if (thumbnailBitmap == null) {
                                 LaunchedEffect(item.asset.fileId) {
-                                    if (isScrollingFast.value) {
-                                        snapshotFlow { isScrollingFast.value }.first { !it }
-                                    }
+                                    // 32ms coroutine debounce: if user is flinging fast, item scrolls off-screen before 32ms,
+                                    // cancelling this coroutine naturally without touching disk or crypto
+                                    delay(32L)
                                     val needsRemoteDownload = !viewModel.hasDiskCache(item.asset.fileId) &&
                                         !viewModel.isInFlight(item.asset.fileId) &&
                                         (item.cryptoMapping?.thumbnailCiphertextHash != null || item.asset.thumbnailHash != null)
@@ -755,7 +746,7 @@ fun GalleryScreen(
                                         isSyncingRemote = true
                                     }
                                     try {
-                                        thumbnailBitmap = viewModel.loadThumbnailStaggered(item)
+                                        thumbnailBitmap = viewModel.loadThumbnail(item)
                                     } finally {
                                         isSyncingRemote = false
                                     }
