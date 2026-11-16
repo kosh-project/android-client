@@ -114,6 +114,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
@@ -251,6 +252,34 @@ fun GalleryScreen(
                     prevScrollOffset = offset
                 }
             }
+    }
+
+    var isScrollingFast by remember { mutableStateOf(false) }
+
+    LaunchedEffect(gridState) {
+        var lastTime = System.currentTimeMillis()
+        var lastIndex = gridState.firstVisibleItemIndex
+        var lastOffset = gridState.firstVisibleItemScrollOffset
+        snapshotFlow {
+            Triple(
+                gridState.isScrollInProgress,
+                gridState.firstVisibleItemIndex,
+                gridState.firstVisibleItemScrollOffset
+            )
+        }.collect { (inProgress, index, offset) ->
+            val now = System.currentTimeMillis()
+            val dt = (now - lastTime).coerceAtLeast(1)
+            val deltaItems = index - lastIndex
+            val deltaOffset = offset - lastOffset
+            val approxDeltaPx = kotlin.math.abs(deltaItems * 250 + deltaOffset)
+            val velocity = (approxDeltaPx * 1000L) / dt
+
+            isScrollingFast = inProgress && (velocity > 1200L || (isScrollingFast && velocity > 400L))
+
+            lastTime = now
+            lastIndex = index
+            lastOffset = offset
+        }
     }
 
     val groupedGalleryItems = remember(galleryItems) {
@@ -765,46 +794,11 @@ fun GalleryScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .pointerInput(Unit) {
-                            awaitPointerEventScope {
-                                while (true) {
-                                    val event = awaitPointerEvent()
-                                    if (event.type == PointerEventType.Scroll) {
-                                        val scrollDelta = event.changes.fold(0f) { acc, c -> acc + c.scrollDelta.y }
-                                        if (scrollDelta != 0f) {
-                                            val atTop = gridState.firstVisibleItemIndex == 0 &&
-                                                    gridState.firstVisibleItemScrollOffset == 0
-                                            if (atTop && scrollDelta < 0f && !isRefreshing) {
-                                                val target = (pullToRefreshAnim.value + (-scrollDelta * 0.15f)).coerceIn(0f, 1.5f)
-                                                coroutineScope.launch {
-                                                    pullToRefreshAnim.snapTo(target)
-                                                    if (target >= 1.0f) {
-                                                        executeRefresh()
-                                                    }
-                                                }
-                                            } else if (pullToRefreshAnim.value > 0f) {
-                                                val target = (pullToRefreshAnim.value + (scrollDelta * 0.15f)).coerceIn(0f, 1.5f)
-                                                coroutineScope.launch {
-                                                    pullToRefreshAnim.snapTo(target)
-                                                }
-                                            } else {
-                                                gridState.dispatchRawDelta(scrollDelta * 64f)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        .pointerInput(Unit) {
                             awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
+                                awaitFirstDown(requireUnconsumed = false)
                                 var accumulatedZoom = 1f
-                                var totalDragY = 0f
-                                var isDragging = false
-                                val isMouseOrUnknown = down.type == PointerType.Mouse || down.type == PointerType.Unknown
-
                                 do {
                                     val event = awaitPointerEvent()
-
                                     // Multi-touch pinch zoom
                                     if (event.changes.size > 1) {
                                         val zoom = event.calculateZoom()
@@ -822,52 +816,8 @@ fun GalleryScreen(
                                             accumulatedZoom = 1f
                                             event.changes.forEach { it.consume() }
                                         }
-                                    } else if (isMouseOrUnknown && event.changes.size == 1) {
-                                        // Waydroid mouse pointer drag
-                                        val change = event.changes.first()
-                                        if (change.pressed) {
-                                            val deltaY = change.position.y - change.previousPosition.y
-                                            totalDragY += deltaY
-
-                                            if (!isDragging && kotlin.math.abs(totalDragY) > 8f) {
-                                                isDragging = true
-                                            }
-
-                                            if (isDragging) {
-                                                change.consume()
-                                                val atTop = gridState.firstVisibleItemIndex == 0 &&
-                                                        gridState.firstVisibleItemScrollOffset == 0
-                                                val isPulling = pullToRefreshAnim.value > 0f || (atTop && deltaY > 0)
-
-                                                if (isPulling && !isRefreshing) {
-                                                    val target = (pullToRefreshAnim.value + deltaY / 300f).coerceIn(0f, 1.5f)
-                                                    coroutineScope.launch {
-                                                        pullToRefreshAnim.snapTo(target)
-                                                    }
-                                                } else {
-                                                    gridState.dispatchRawDelta(-deltaY)
-                                                }
-                                            }
-                                        }
                                     }
                                 } while (event.changes.any { it.pressed })
-
-                                if (isMouseOrUnknown && isDragging) {
-                                    val currentFraction = pullToRefreshAnim.value
-                                    if (currentFraction >= 1.0f && !isRefreshing) {
-                                        executeRefresh()
-                                    } else if (currentFraction > 0f) {
-                                        coroutineScope.launch {
-                                            pullToRefreshAnim.animateTo(
-                                                targetValue = 0f,
-                                                animationSpec = spring(
-                                                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                                                    stiffness = Spring.StiffnessMediumLow
-                                                )
-                                            )
-                                        }
-                                    }
-                                }
                             }
                         }
                 ) {
@@ -888,13 +838,19 @@ fun GalleryScreen(
                         }
 
                         items(group.items, key = { it.asset.fileId }) { item ->
-                            var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf<Bitmap?>(null) }
-                            var isLoadingThumbnail by remember(item.asset.fileId) { mutableStateOf(true) }
+                            val cachedBitmap = remember(item.asset.fileId) { viewModel.getFromMemoryCache(item) }
+                            var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf(cachedBitmap) }
+                            var isLoadingThumbnail by remember(item.asset.fileId) { mutableStateOf(cachedBitmap == null) }
 
-                            LaunchedEffect(item.asset.fileId, item.cryptoMapping?.thumbnailCiphertextHash, item.asset.thumbnailHash) {
-                                isLoadingThumbnail = true
-                                thumbnailBitmap = viewModel.loadThumbnail(item)
-                                isLoadingThumbnail = false
+                            if (thumbnailBitmap == null) {
+                                LaunchedEffect(item.asset.fileId, isScrollingFast) {
+                                    if (isScrollingFast) {
+                                        snapshotFlow { isScrollingFast }.first { !it }
+                                    }
+                                    isLoadingThumbnail = true
+                                    thumbnailBitmap = viewModel.loadThumbnail(item)
+                                    isLoadingThumbnail = false
+                                }
                             }
 
                             val uploadStage = activeUploadStages[item.asset.fileId]
@@ -907,7 +863,12 @@ fun GalleryScreen(
                                 onClick = {
                                     // Fullscreen viewer deferred to next iteration
                                 },
-                                modifier = Modifier.animateItem()
+                                modifier = Modifier.animateItem(
+                                    placementSpec = spring(
+                                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
                             )
                         }
                     }

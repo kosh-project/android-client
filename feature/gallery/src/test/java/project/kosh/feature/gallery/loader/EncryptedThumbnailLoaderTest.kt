@@ -395,5 +395,43 @@ class EncryptedThumbnailLoaderTest {
         assertNotNull(result)
         assertEquals(2, callCount)
     }
+
+    @Test
+    fun getFromMemoryCache_returnsCachedBitmapDirectly() {
+        val fileId = "test-get-mem"
+        assertNull(loader.getFromMemoryCache(fileId))
+
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
+        loader.memoryCache.put(fileId, bitmap)
+
+        assertEquals(bitmap, loader.getFromMemoryCache(fileId))
+    }
+
+    @Test
+    fun hasDiskCache_detectsDiskCachePresence() {
+        val fileId = "test-has-disk"
+        assertFalse(loader.hasDiskCache(fileId))
+
+        val diskFile = File(loader.diskCacheDir, "$fileId.webp")
+        diskFile.writeBytes(byteArrayOf(1, 2, 3))
+        assertTrue(loader.hasDiskCache(fileId))
+    }
+
+    @Test
+    fun cacheDecryptedThumbnail_persistsToDiskAndPopulatesMemoryCache() {
+        val fileId = "test-pre-cache"
+        val testBitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val plainBytes = stream.toByteArray()
+
+        val result = loader.cacheDecryptedThumbnail(fileId, plainBytes)
+        assertNotNull(result)
+        assertEquals(result, loader.getFromMemoryCache(fileId))
+
+        val diskFile = File(loader.diskCacheDir, "$fileId.webp")
+        assertTrue(diskFile.exists())
+        assertEquals(plainBytes.size, diskFile.readBytes().size)
+    }
 }
 

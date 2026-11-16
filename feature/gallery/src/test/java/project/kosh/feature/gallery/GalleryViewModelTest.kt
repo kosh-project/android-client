@@ -330,6 +330,19 @@ class GalleryViewModelTest {
     }
 
     @Test
+    fun `getFromMemoryCache returns cached bitmap from loader`() {
+        val mockItem: MediaWithCryptoDetails = mockk(relaxed = true) {
+            every { asset.fileId } returns "test-cache-file"
+        }
+        val mockBitmap: Bitmap = mockk(relaxed = true)
+        every { mockThumbnailLoader.getFromMemoryCache("test-cache-file") } returns mockBitmap
+
+        val result = viewModel.getFromMemoryCache(mockItem)
+        assertEquals(mockBitmap, result)
+        verify(exactly = 1) { mockThumbnailLoader.getFromMemoryCache("test-cache-file") }
+    }
+
+    @Test
     fun `startHostPairing collects host flow and updates pairingState`() = runTest {
         coEvery { mockDevicePairingManager.startHostFlow(any(), any()) } returns flowOf(
             PairingState.AwaitingJoin("test-mbx", "{\"mailbox_id\":\"test-mbx\"}", 300L)

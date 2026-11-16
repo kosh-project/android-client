@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -252,6 +253,7 @@ class GalleryViewModel @Inject constructor(
         }
         if (authRepository.isLoggedIn()) {
             snapshotScheduler.schedulePeriodicSnapshot()
+            startThumbnailPrefetch()
         }
     }
 
@@ -281,6 +283,8 @@ class GalleryViewModel @Inject constructor(
                     mimeType = mimeType,
                     fileSize = fileSize
                 )
+                // Pre-cache local preview in L1 memory cache for zero-coroutine composition
+                thumbnailLoader.loadLocalThumbnail(contentResolver, uri, fileId, mimeType)
                 newTasks.add(task)
                 newTasksMap[fileId] = task
             }
@@ -502,6 +506,46 @@ class GalleryViewModel @Inject constructor(
                 delay(1200L)
                 _activeUploadStages.value = _activeUploadStages.value - task.fileId - task.uri.toString()
                 _inFlightUploads.value = _inFlightUploads.value - task.fileId
+            }
+        }
+    }
+
+    /**
+     * Synchronously resolves a cached thumbnail bitmap from L1 memory cache for zero-coroutine composition.
+     */
+    fun getFromMemoryCache(item: MediaWithCryptoDetails): Bitmap? {
+        val fileId = item.asset.fileId
+        thumbnailLoader.getFromMemoryCache(fileId)?.let { return it }
+        val inFlight = _inFlightUploads.value[fileId]
+        if (inFlight != null) {
+            thumbnailLoader.getFromMemoryCache(inFlight.uri.toString())?.let { return it }
+        }
+        return null
+    }
+
+    private var prefetchJob: Job? = null
+
+    /**
+     * Pre-caches decrypted WebP thumbnails into local disk cache in the background for smooth scrolling.
+     */
+    internal fun startThumbnailPrefetch() {
+        prefetchJob?.cancel()
+        prefetchJob = viewModelScope.launch(ioDispatcher) {
+            galleryItems.collectLatest { items ->
+                val masterKey = authRepository.getVaultKey() ?: return@collectLatest
+                if (masterKey.isClosed) return@collectLatest
+
+                val candidates = items.take(40).filter { item ->
+                    !thumbnailLoader.hasDiskCache(item.asset.fileId) &&
+                        (item.cryptoMapping?.thumbnailCiphertextHash != null || item.asset.thumbnailHash != null)
+                }
+
+                for (item in candidates) {
+                    if (!isActive) break
+                    try {
+                        thumbnailLoader.loadThumbnail(item, masterKey)
+                    } catch (_: Exception) {}
+                }
             }
         }
     }
