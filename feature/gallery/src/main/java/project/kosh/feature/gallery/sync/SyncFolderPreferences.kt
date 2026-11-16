@@ -49,6 +49,13 @@ class SyncFolderPreferences @Inject constructor(
         setEnabledBucketIds(current)
     }
 
+    /**
+     * Resets all folder sync selections and onboarding completion state.
+     */
+    fun reset() {
+        prefs.edit().clear().apply()
+    }
+
     companion object {
         private const val KEY_ENABLED_BUCKETS = "enabled_bucket_ids"
         private const val KEY_SETUP_COMPLETED = "has_completed_folder_setup"

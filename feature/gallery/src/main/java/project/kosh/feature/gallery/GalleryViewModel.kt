@@ -29,6 +29,7 @@ import project.kosh.core.auth.AuthRepository
 import project.kosh.core.auth.DevicePairingManager
 import project.kosh.core.auth.PairingState
 import project.kosh.core.crypto.MasterVaultKey
+import project.kosh.core.database.UserDataPurgeCoordinator
 import project.kosh.core.database.crdt.CrdtSyncEngine
 import project.kosh.core.database.crdt.MediaUploadPipeline
 import project.kosh.core.database.crdt.SnapshotSyncManager
@@ -116,7 +117,8 @@ class GalleryViewModel @Inject constructor(
     private val mediaAssetDao: MediaAssetDao,
     private val snapshotScheduler: SnapshotWorkManagerScheduler,
     private val serverHealthPinger: ServerHealthPinger? = null,
-    private val serverConfigStore: ServerConfigurationStore? = null
+    private val serverConfigStore: ServerConfigurationStore? = null,
+    private val userDataPurgeCoordinator: UserDataPurgeCoordinator? = null
 ) : ViewModel() {
 
     internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
@@ -234,6 +236,16 @@ class GalleryViewModel @Inject constructor(
     private var completedBatchBytes = 0L
 
     init {
+        // Enforce account ID tracking if set
+        val currentKey = authRepository.getVaultKey()
+        if (currentKey != null && !currentKey.isClosed) {
+            val currentAccountId = authRepository.computeAccountId(currentKey)
+            val lastAccountId = authRepository.getLastActiveAccountId()
+            if (lastAccountId == null) {
+                authRepository.saveLastActiveAccountId(currentAccountId)
+            }
+        }
+
         // Check first-time folder setup
         if (!syncFolderPreferences.hasCompletedFolderSetup()) {
             _showPermissionRationale.value = true
@@ -352,6 +364,9 @@ class GalleryViewModel @Inject constructor(
                         }
                     }
 
+                    // Keep completion state visible for smooth animation exit
+                    delay(800L)
+
                     _batchUploadState.value = _batchUploadState.value.copy(
                         isUploading = false,
                         totalItems = 0,
@@ -409,6 +424,7 @@ class GalleryViewModel @Inject constructor(
         val initialStage = UploadStage.Hashing(0f)
         _activeUploadStages.value = _activeUploadStages.value + (task.fileId to initialStage) + (task.uri.toString() to initialStage)
 
+        var lastProgressUpdateMillis = 0L
         val result = mediaUploadPipeline.uploadFromUri(
             contentResolver = task.contentResolver,
             uri = task.uri,
@@ -418,24 +434,32 @@ class GalleryViewModel @Inject constructor(
             customFileId = task.fileId,
             customCapturedAt = task.dateModified,
             onProgress = { stage ->
-                _activeUploadStages.value = _activeUploadStages.value + (task.fileId to stage) + (task.uri.toString() to stage)
-                val sent = when (stage) {
-                    is UploadStage.Uploading -> {
-                        if (task.fileSize > 0L && stage.totalBytes > 0L) {
-                            minOf(task.fileSize, (stage.progress * task.fileSize).toLong())
-                        } else {
-                            stage.bytesSent
+                val now = System.currentTimeMillis()
+                val isThrottled = stage is UploadStage.Uploading &&
+                    _activeUploadStages.value[task.fileId] is UploadStage.Uploading &&
+                    (now - lastProgressUpdateMillis < 1200L) &&
+                    stage.progress < 1f
+                if (!isThrottled) {
+                    lastProgressUpdateMillis = now
+                    _activeUploadStages.value = _activeUploadStages.value + (task.fileId to stage) + (task.uri.toString() to stage)
+                    val sent = when (stage) {
+                        is UploadStage.Uploading -> {
+                            if (task.fileSize > 0L && stage.totalBytes > 0L) {
+                                minOf(task.fileSize, (stage.progress * task.fileSize).toLong())
+                            } else {
+                                stage.bytesSent
+                            }
                         }
+                        is UploadStage.Finalizing, is UploadStage.Completed -> {
+                            if (task.fileSize > 0L) task.fileSize else _batchUploadState.value.currentItemBytesSent
+                        }
+                        else -> 0L
                     }
-                    is UploadStage.Finalizing, is UploadStage.Completed -> {
-                        if (task.fileSize > 0L) task.fileSize else _batchUploadState.value.currentItemBytesSent
-                    }
-                    else -> 0L
+                    _batchUploadState.value = _batchUploadState.value.copy(
+                        currentStage = stage,
+                        currentItemBytesSent = sent
+                    )
                 }
-                _batchUploadState.value = _batchUploadState.value.copy(
-                    currentStage = stage,
-                    currentItemBytesSent = sent
-                )
             }
         )
 
@@ -756,7 +780,6 @@ class GalleryViewModel @Inject constructor(
     fun isSessionActive(): Boolean = authRepository.isLoggedIn()
 
     fun logout() {
-        snapshotScheduler.cancelPeriodicSnapshot()
         manualSyncJob?.cancel()
         manualSyncJob = null
         stopLedgerTicker()
@@ -765,7 +788,9 @@ class GalleryViewModel @Inject constructor(
         _isSessionActive.value = false
         _activeUser.value = null
         thumbnailLoader.clearMemoryCache()
-        thumbnailLoader.clearDiskCache()
+        snapshotScheduler.cancelPeriodicSnapshot()
+        // Note: Do not clear disk cache or Room database on logout to allow re-login to the same account.
+        // Data is purged only if user creates a new account or logs in with a different account.
     }
 
     /**
@@ -777,6 +802,18 @@ class GalleryViewModel @Inject constructor(
         val masterKey = authRepository.getVaultKey() ?: return@launch
         if (masterKey.isClosed) return@launch
         try {
+            val currentAccountId = authRepository.computeAccountId(masterKey)
+            val lastAccountId = authRepository.getLastActiveAccountId()
+            if (lastAccountId != null && lastAccountId != currentAccountId) {
+                userDataPurgeCoordinator?.purgeAllUserData()
+                thumbnailLoader.clearMemoryCache()
+                thumbnailLoader.clearDiskCache()
+                syncFolderPreferences.reset()
+                authRepository.saveLastActiveAccountId(currentAccountId)
+            } else if (lastAccountId == null) {
+                authRepository.saveLastActiveAccountId(currentAccountId)
+            }
+
             if (mediaAssetDao.getCount() == 0) {
                 try {
                     snapshotSyncManager.restoreFromLatestSnapshot(masterKey, SyncNamespace.GALLERY)

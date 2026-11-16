@@ -19,6 +19,9 @@ android {
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.isReturnDefaultValues = true
+        unitTests.all {
+            it.maxHeapSize = "2048m"
+        }
     }
     buildFeatures { compose = true }
 }

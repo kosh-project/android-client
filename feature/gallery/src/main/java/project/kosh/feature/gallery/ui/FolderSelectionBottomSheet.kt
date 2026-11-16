@@ -114,7 +114,7 @@ fun FolderSelectionBottomSheet(
                 Spacer(Modifier.width(16.dp))
                 Column {
                     Text(
-                        text = "Sync Media Folders",
+                        text = "Sync media folders",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
@@ -189,14 +189,14 @@ fun FolderSelectionBottomSheet(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
-                shape = RoundedCornerShape(16.dp)
+                    .height(48.dp),
+                shape = RoundedCornerShape(10.dp)
             ) {
                 Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(20.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (selectedBuckets.isEmpty()) "Save Selection (None)" else "Start Syncing (${selectedBuckets.size} Folders)",
-                    fontWeight = FontWeight.Bold,
+                    text = if (selectedBuckets.isEmpty()) "Save selection (none)" else "Start syncing (${selectedBuckets.size} folders)",
+                    fontWeight = FontWeight.SemiBold,
                     fontSize = 15.sp
                 )
             }
@@ -218,10 +218,18 @@ private fun FolderGridCard(
     Surface(
         onClick = onToggle,
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isChecked) 0.5f else 0.25f),
+        color = if (isChecked) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)
+        } else {
+            MaterialTheme.colorScheme.surface
+        },
         border = BorderStroke(
-            width = if (isChecked) 1.5.dp else 0.5.dp,
-            color = if (isChecked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            width = if (isChecked) 1.5.dp else 1.dp,
+            color = if (isChecked) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+            }
         ),
         modifier = Modifier.fillMaxWidth()
     ) {

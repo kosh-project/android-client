@@ -138,11 +138,12 @@ class GalleryViewModelTest {
     }
 
     @Test
-    fun `logout delegates to authRepository and clears session states and memory cache`() {
+    fun `logout delegates to authRepository and clears session states and memory cache without wiping disk cache`() {
         viewModel.logout()
         verify(exactly = 1) { mockAuthRepository.logout() }
         verify(exactly = 1) { mockThumbnailLoader.clearMemoryCache() }
-        verify(exactly = 1) { mockThumbnailLoader.clearDiskCache() }
+        verify(exactly = 1) { mockSnapshotScheduler.cancelPeriodicSnapshot() }
+        verify(exactly = 0) { mockThumbnailLoader.clearDiskCache() }
         assertFalse(viewModel.isSessionActive.value)
         assertEquals(null, viewModel.activeUser.value)
     }
