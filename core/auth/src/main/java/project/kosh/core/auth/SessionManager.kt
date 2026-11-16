@@ -139,6 +139,9 @@ class SessionManager @Inject constructor(
         prefs.edit {
             putString("vault_key_iv", Base64.encodeToString(iv, Base64.DEFAULT))
             putString("vault_key_enc", Base64.encodeToString(ciphertext, Base64.DEFAULT))
+            if (getLastActiveAccountId() == null) {
+                putString("last_active_account_id", computeAccountId(vaultKey))
+            }
         }
     }
 
@@ -161,7 +164,11 @@ class SessionManager @Inject constructor(
 
         return try {
             val keyBytes = cipher.doFinal(ciphertext)
-            MasterVaultKey(keyBytes)
+            val key = MasterVaultKey(keyBytes)
+            if (getLastActiveAccountId() == null) {
+                saveLastActiveAccountId(computeAccountId(key))
+            }
+            key
         } catch (e: Exception) {
             null
         }
@@ -244,6 +251,8 @@ class SessionManager @Inject constructor(
      * Invoked during user logout or when the server responds with HTTP 401 Unauthorized
      * (e.g. token expiration or server reboot with rotated signing secret) to prevent
      * infinite 401 retry loops.
+     *
+     * Note: "last_active_account_id" is preserved across logout to detect account switches on subsequent logins.
      */
     fun clearToken() {
         prefs.edit {
@@ -255,5 +264,38 @@ class SessionManager @Inject constructor(
             remove("registration_ticket_iv")
             remove("registration_ticket_enc")
         }
+    }
+
+    /**
+     * Persists the cryptographic identifier of the active account across logout sessions.
+     */
+    fun saveLastActiveAccountId(accountId: String) {
+        prefs.edit {
+            putString("last_active_account_id", accountId)
+        }
+    }
+
+    /**
+     * Resolves the cryptographic identifier of the last active account, or null if unset.
+     */
+    fun getLastActiveAccountId(): String? {
+        return prefs.getString("last_active_account_id", null)
+    }
+
+    /**
+     * Clears the persisted account identifier.
+     */
+    fun clearLastActiveAccountId() {
+        prefs.edit {
+            remove("last_active_account_id")
+        }
+    }
+
+    /**
+     * Derives a deterministic SHA-256 hex account identifier from the Master Vault Key.
+     */
+    fun computeAccountId(vaultKey: MasterVaultKey): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(vaultKey.keyBytes)
+        return digest.joinToString("") { "%02x".format(it) }
     }
 }
