@@ -83,12 +83,7 @@ fun GalleryItemTile(
     }
 
     val isVideo = item.asset.mediaType.startsWith("video/", ignoreCase = true)
-    val hasInitialThumbnail = remember { thumbnail != null }
-    val animatedThumbnailAlpha by animateFloatAsState(
-        targetValue = if (thumbnail != null) 1f else 0f,
-        animationSpec = tween(durationMillis = if (hasInitialThumbnail) 0 else 220),
-        label = "thumbnailAlpha"
-    )
+    val imageBitmap = remember(thumbnail) { thumbnail?.asImageBitmap() }
 
     Box(
         modifier = modifier
@@ -96,51 +91,46 @@ fun GalleryItemTile(
             .clip(RoundedCornerShape(4.dp))
             .clickable(onClick = onClick)
     ) {
-        // Base Layer: Quiet Neutral Placeholder Surface & Remote Sync Indicator
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center
-        ) {
-            if (isSyncingRemote && thumbnail == null) {
-                // Show rotating progress indicator only for items actively being fetched/synced from remote server
-                CircularProgressIndicator(
-                    strokeWidth = 2.dp,
-                    modifier = Modifier.size(24.dp),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            } else if (thumbnail == null || animatedThumbnailAlpha < 1f) {
-                // Static neutral placeholder icon fading out smoothly as thumbnail cross-fades in
-                Icon(
-                    imageVector = if (isVideo) Icons.Default.PlayArrow else Icons.Default.Image,
-                    contentDescription = if (isVideo) "Video" else "Image",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                        alpha = 0.35f * (1f - animatedThumbnailAlpha)
-                    ),
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-
-        // Thumbnail Image Layer (smoothly cross-fades over placeholder)
-        if (thumbnail != null) {
-            Image(
-                bitmap = thumbnail.asImageBitmap(),
-                contentDescription = item.asset.fileId,
-                contentScale = ContentScale.Crop,
+        if (imageBitmap == null) {
+            // Base Layer: Quiet Neutral Placeholder Surface & Remote Sync Indicator
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = animatedThumbnailAlpha }
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isSyncingRemote) {
+                    // Show rotating progress indicator only for items actively being fetched/synced from remote server
+                    CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(24.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    // Static neutral placeholder icon
+                    Icon(
+                        imageVector = if (isVideo) Icons.Default.PlayArrow else Icons.Default.Image,
+                        contentDescription = if (isVideo) "Video" else "Image",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+        } else {
+            // Thumbnail Image Layer (renders directly without animation overhead)
+            Image(
+                bitmap = imageBitmap,
+                contentDescription = item.asset.fileId,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
             )
             if (isVideo) {
                 Surface(
                     shape = RoundedCornerShape(4.dp),
-                    color = Color.Black.copy(alpha = 0.6f * animatedThumbnailAlpha),
+                    color = Color.Black.copy(alpha = 0.6f),
                     modifier = Modifier
                         .padding(6.dp)
                         .align(Alignment.BottomStart)
-                        .graphicsLayer { alpha = animatedThumbnailAlpha }
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
