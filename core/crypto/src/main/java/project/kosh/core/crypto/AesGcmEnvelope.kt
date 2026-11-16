@@ -83,6 +83,30 @@ object AesGcmEnvelope {
     }
 
     /**
+     * Generates a cryptographically secure 12-byte IV for AES-GCM.
+     */
+    fun generateIv(random: SecureRandom = SecureRandom()): ByteArray {
+        val iv = ByteArray(IV_SIZE_BYTES)
+        random.nextBytes(iv)
+        return iv
+    }
+
+    /**
+     * Initializes and returns an AES-256-GCM [Cipher] configured for [Cipher.ENCRYPT_MODE]
+     * with the specified 32-byte [key] and 12-byte [iv].
+     */
+    fun createEncryptCipher(key: ByteArray, iv: ByteArray): Cipher {
+        require(key.size == KEY_SIZE_BYTES) { "Key must be exactly $KEY_SIZE_BYTES bytes" }
+        require(iv.size == IV_SIZE_BYTES) { "IV must be exactly $IV_SIZE_BYTES bytes" }
+
+        val cipher = Cipher.getInstance(ALGORITHM)
+        val keySpec = SecretKeySpec(key, "AES")
+        val gcmSpec = GCMParameterSpec(TAG_SIZE_BITS, iv)
+        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec)
+        return cipher
+    }
+
+    /**
      * Streams encryption of [inputStream] into [outputStream] via AES-256-GCM.
      * Wire format: [12-byte IV][ciphertext + 16-byte GCM tag]
      *
@@ -98,16 +122,11 @@ object AesGcmEnvelope {
         bufferSize: Int = 64 * 1024,
         onProgress: ((bytesRead: Long) -> Unit)? = null
     ): Long {
-        require(key.size == KEY_SIZE_BYTES) { "Key must be exactly $KEY_SIZE_BYTES bytes" }
-
-        val iv = ByteArray(IV_SIZE_BYTES)
-        random.nextBytes(iv)
+        val iv = generateIv(random)
         outputStream.write(iv)
+        outputStream.flush()
 
-        val cipher = Cipher.getInstance(ALGORITHM)
-        val keySpec = SecretKeySpec(key, "AES")
-        val gcmSpec = GCMParameterSpec(TAG_SIZE_BITS, iv)
-        cipher.init(Cipher.ENCRYPT_MODE, keySpec, gcmSpec)
+        val cipher = createEncryptCipher(key, iv)
 
         val buffer = ByteArray(bufferSize)
         var bytesRead: Int
@@ -117,6 +136,7 @@ object AesGcmEnvelope {
             val updateBytes = cipher.update(buffer, 0, bytesRead)
             if (updateBytes != null && updateBytes.isNotEmpty()) {
                 outputStream.write(updateBytes)
+                outputStream.flush()
             }
             totalRead += bytesRead
             onProgress?.invoke(totalRead)
