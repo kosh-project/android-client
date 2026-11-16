@@ -254,12 +254,13 @@ fun GalleryScreen(
             }
     }
 
-    var isScrollingFast by remember { mutableStateOf(false) }
+    val isScrollingFast = remember { mutableStateOf(false) }
 
     LaunchedEffect(gridState) {
         var lastTime = System.currentTimeMillis()
         var lastIndex = gridState.firstVisibleItemIndex
         var lastOffset = gridState.firstVisibleItemScrollOffset
+        var resetJob: kotlinx.coroutines.Job? = null
         snapshotFlow {
             Triple(
                 gridState.isScrollInProgress,
@@ -267,6 +268,15 @@ fun GalleryScreen(
                 gridState.firstVisibleItemScrollOffset
             )
         }.collect { (inProgress, index, offset) ->
+            if (!inProgress) {
+                resetJob?.cancel()
+                isScrollingFast.value = false
+                lastTime = System.currentTimeMillis()
+                lastIndex = index
+                lastOffset = offset
+                return@collect
+            }
+
             val now = System.currentTimeMillis()
             val dt = (now - lastTime).coerceAtLeast(1)
             val deltaItems = index - lastIndex
@@ -274,7 +284,16 @@ fun GalleryScreen(
             val approxDeltaPx = kotlin.math.abs(deltaItems * 250 + deltaOffset)
             val velocity = (approxDeltaPx * 1000L) / dt
 
-            isScrollingFast = inProgress && (velocity > 1200L || (isScrollingFast && velocity > 400L))
+            val isFast = velocity > 1200L || (isScrollingFast.value && velocity > 400L)
+            isScrollingFast.value = isFast
+
+            resetJob?.cancel()
+            if (isFast) {
+                resetJob = launch {
+                    delay(150L)
+                    isScrollingFast.value = false
+                }
+            }
 
             lastTime = now
             lastIndex = index
@@ -816,6 +835,8 @@ fun GalleryScreen(
                                             accumulatedZoom = 1f
                                             event.changes.forEach { it.consume() }
                                         }
+                                    } else {
+                                        accumulatedZoom = 1f
                                     }
                                 } while (event.changes.any { it.pressed })
                             }
@@ -843,9 +864,9 @@ fun GalleryScreen(
                             var isLoadingThumbnail by remember(item.asset.fileId) { mutableStateOf(cachedBitmap == null) }
 
                             if (thumbnailBitmap == null) {
-                                LaunchedEffect(item.asset.fileId, isScrollingFast) {
-                                    if (isScrollingFast) {
-                                        snapshotFlow { isScrollingFast }.first { !it }
+                                LaunchedEffect(item.asset.fileId) {
+                                    if (isScrollingFast.value) {
+                                        snapshotFlow { isScrollingFast.value }.first { !it }
                                     }
                                     isLoadingThumbnail = true
                                     thumbnailBitmap = viewModel.loadThumbnail(item)

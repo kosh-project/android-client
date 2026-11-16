@@ -529,19 +529,20 @@ class GalleryViewModel @Inject constructor(
      * Pre-caches decrypted WebP thumbnails into local disk cache in the background for smooth scrolling.
      */
     internal fun startThumbnailPrefetch() {
-        prefetchJob?.cancel()
+        if (prefetchJob?.isActive == true) return
         prefetchJob = viewModelScope.launch(ioDispatcher) {
-            galleryItems.collectLatest { items ->
-                val masterKey = authRepository.getVaultKey() ?: return@collectLatest
-                if (masterKey.isClosed) return@collectLatest
+            galleryItems.collect { items ->
+                val masterKey = authRepository.getVaultKey() ?: return@collect
+                if (masterKey.isClosed) return@collect
 
-                val candidates = items.take(40).filter { item ->
+                val candidates = items.filter { item ->
                     !thumbnailLoader.hasDiskCache(item.asset.fileId) &&
                         (item.cryptoMapping?.thumbnailCiphertextHash != null || item.asset.thumbnailHash != null)
                 }
 
                 for (item in candidates) {
                     if (!isActive) break
+                    if (thumbnailLoader.hasDiskCache(item.asset.fileId)) continue
                     try {
                         thumbnailLoader.loadThumbnail(item, masterKey)
                     } catch (_: Exception) {}
