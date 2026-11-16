@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.graphics.Rect
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -71,34 +72,70 @@ class EncryptedThumbnailLoader @Inject constructor(
         return diskFile.exists() && diskFile.length() > 0
     }
 
-    fun cacheDecryptedThumbnail(fileId: String, plaintextBytes: ByteArray): Bitmap? {
+    fun cacheDecryptedThumbnail(fileId: String, plaintextBytes: ByteArray, targetPx: Int = 256): Bitmap? {
         val diskFile = File(diskCacheDir, "$fileId.webp")
         if (!diskFile.exists() || diskFile.length() == 0L) {
             try {
                 diskFile.writeBytes(plaintextBytes)
             } catch (_: Exception) {}
         }
-        val bitmap = decodeHardwareBitmap(plaintextBytes) ?: decodeHardwareBitmap(diskFile)
+        val bitmap = decodeHardwareBitmap(plaintextBytes, targetPx) ?: decodeHardwareBitmap(diskFile, targetPx)
         if (bitmap != null) {
             memoryCache.put(fileId, bitmap)
         }
         return bitmap
     }
 
-    internal fun decodeHardwareBitmap(file: File): Bitmap? {
+    private fun configureHardwareDownsampleAndCenterCrop(
+        decoder: ImageDecoder,
+        info: ImageDecoder.ImageInfo,
+        targetPx: Int
+    ) {
+        decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
+        val srcWidth = info.size.width
+        val srcHeight = info.size.height
+
+        if (srcWidth > targetPx && srcHeight > targetPx) {
+            val scale = targetPx.toFloat() / minOf(srcWidth, srcHeight)
+            val scaledW = (srcWidth * scale).toInt().coerceAtLeast(targetPx)
+            val scaledH = (srcHeight * scale).toInt().coerceAtLeast(targetPx)
+            decoder.setTargetSize(scaledW, scaledH)
+
+            val cropLeft = (scaledW - targetPx) / 2
+            val cropTop = (scaledH - targetPx) / 2
+            decoder.crop = Rect(
+                cropLeft,
+                cropTop,
+                cropLeft + targetPx,
+                cropTop + targetPx
+            )
+        }
+    }
+
+    internal fun decodeHardwareBitmap(file: File, targetPx: Int = 256): Bitmap? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 val source = ImageDecoder.createSource(file)
-                return ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
-                    decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
+                return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    configureHardwareDownsampleAndCenterCrop(decoder, info, targetPx)
                 }
             } catch (_: Throwable) {
                 // Fallback to BitmapFactory
             }
         }
         return try {
+            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, boundsOptions)
+            var sampleSize = 1
+            if (boundsOptions.outWidth > targetPx && boundsOptions.outHeight > targetPx) {
+                val minOrig = minOf(boundsOptions.outWidth, boundsOptions.outHeight)
+                while (minOrig / (sampleSize * 2) >= targetPx) {
+                    sampleSize *= 2
+                }
+            }
             val options = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.HARDWARE
+                inSampleSize = sampleSize
             }
             BitmapFactory.decodeFile(file.absolutePath, options)
                 ?: BitmapFactory.decodeFile(file.absolutePath)
@@ -111,21 +148,31 @@ class EncryptedThumbnailLoader @Inject constructor(
         }
     }
 
-    internal fun decodeHardwareBitmap(bytes: ByteArray): Bitmap? {
+    internal fun decodeHardwareBitmap(bytes: ByteArray, targetPx: Int = 256): Bitmap? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 val buffer = ByteBuffer.wrap(bytes)
                 val source = ImageDecoder.createSource(buffer)
-                return ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
-                    decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
+                return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    configureHardwareDownsampleAndCenterCrop(decoder, info, targetPx)
                 }
             } catch (_: Throwable) {
                 // Fallback to BitmapFactory
             }
         }
         return try {
+            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOptions)
+            var sampleSize = 1
+            if (boundsOptions.outWidth > targetPx && boundsOptions.outHeight > targetPx) {
+                val minOrig = minOf(boundsOptions.outWidth, boundsOptions.outHeight)
+                while (minOrig / (sampleSize * 2) >= targetPx) {
+                    sampleSize *= 2
+                }
+            }
             val options = BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.HARDWARE
+                inSampleSize = sampleSize
             }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
                 ?: BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -172,17 +219,18 @@ class EncryptedThumbnailLoader @Inject constructor(
         contentResolver: ContentResolver,
         uri: Uri,
         fileId: String? = null,
-        mimeType: String? = null
+        mimeType: String? = null,
+        targetPx: Int = 256
     ): Bitmap? {
         val cacheKey = fileId ?: uri.toString()
         memoryCache.get(cacheKey)?.let { return it }
 
         val isVideo = (mimeType ?: contentResolver.getType(uri))?.startsWith("video/", ignoreCase = true) == true
         val bitmap = if (isVideo) {
-            extractVideoThumbnail(contentResolver, uri, targetSize = 256)
+            extractVideoThumbnail(contentResolver, uri, targetSize = targetPx)
         } else {
             try {
-                val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = 256)
+                val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = targetPx)
                 val options = BitmapFactory.Options().apply {
                     inSampleSize = sampleSize
                     inPreferredConfig = Bitmap.Config.HARDWARE
@@ -300,7 +348,8 @@ class EncryptedThumbnailLoader @Inject constructor(
      */
     suspend fun loadThumbnail(
         item: MediaWithCryptoDetails,
-        masterKey: MasterVaultKey?
+        masterKey: MasterVaultKey?,
+        targetPx: Int = 256
     ): Bitmap? = withContext(Dispatchers.IO) {
         val fileId = item.asset.fileId
 
@@ -312,13 +361,15 @@ class EncryptedThumbnailLoader @Inject constructor(
         if (diskFile.exists() && diskFile.length() > 0) {
             val diskBitmap = decodeSemaphore.withPermit {
                 memoryCache.get(fileId)?.let { return@withPermit it }
-                try {
-                    decodeHardwareBitmap(diskFile)?.also {
-                        memoryCache.put(fileId, it)
+                withContext(Dispatchers.Default) {
+                    try {
+                        decodeHardwareBitmap(diskFile, targetPx)?.also {
+                            memoryCache.put(fileId, it)
+                        }
+                    } catch (_: Exception) {
+                        diskFile.delete()
+                        null
                     }
-                } catch (_: Exception) {
-                    diskFile.delete()
-                    null
                 }
             }
             if (diskBitmap != null) {
@@ -342,8 +393,10 @@ class EncryptedThumbnailLoader @Inject constructor(
             if (diskFile.exists() && diskFile.length() > 0) {
                 try {
                     val bitmap = decodeSemaphore.withPermit {
-                        memoryCache.get(fileId) ?: decodeHardwareBitmap(diskFile)?.also {
-                            memoryCache.put(fileId, it)
+                        memoryCache.get(fileId) ?: withContext(Dispatchers.Default) {
+                            decodeHardwareBitmap(diskFile, targetPx)?.also {
+                                memoryCache.put(fileId, it)
+                            }
                         }
                     }
                     if (bitmap != null) return@withPermit bitmap
@@ -360,13 +413,17 @@ class EncryptedThumbnailLoader @Inject constructor(
                     when (val result = assetClient.downloadAsset(thumbHash, tempFile)) {
                         is NetworkResult.Success -> {
                             try {
-                                val rawDek = AesGcmEnvelope.unwrapKey(wrappedDek, masterKey.keyBytes)
                                 val encryptedBytes = result.data.readBytes()
-                                val plaintextWebp = AesGcmEnvelope.decrypt(encryptedBytes, rawDek)
-                                diskFile.writeBytes(plaintextWebp)
-                                val bitmap = decodeSemaphore.withPermit {
-                                    decodeHardwareBitmap(plaintextWebp)
-                                        ?: decodeHardwareBitmap(diskFile)
+                                val bitmap = withContext(Dispatchers.Default) {
+                                    val rawDek = AesGcmEnvelope.unwrapKey(wrappedDek, masterKey.keyBytes)
+                                    val plaintextWebp = AesGcmEnvelope.decrypt(encryptedBytes, rawDek)
+                                    withContext(Dispatchers.IO) {
+                                        diskFile.writeBytes(plaintextWebp)
+                                    }
+                                    decodeSemaphore.withPermit {
+                                        decodeHardwareBitmap(plaintextWebp, targetPx)
+                                            ?: decodeHardwareBitmap(diskFile, targetPx)
+                                    }
                                 }
                                 if (bitmap != null) {
                                     memoryCache.put(fileId, bitmap)

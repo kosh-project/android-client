@@ -459,5 +459,30 @@ class EncryptedThumbnailLoaderTest {
         assertEquals(result, loader.getFromMemoryCache(fileId))
         coVerify(exactly = 0) { mockAssetClient.downloadAsset(any(), any()) }
     }
+
+    @Test
+    fun loadThumbnail_acceptsTargetPxDownsample() = runTest {
+        val fileId = "test-target-px"
+        val testBitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val diskFile = File(loader.diskCacheDir, "$fileId.webp")
+        diskFile.writeBytes(stream.toByteArray())
+
+        val item = MediaWithCryptoDetails(
+            asset = MediaAssetEntity(
+                fileId = fileId,
+                mediaType = "image/jpeg",
+                fileSize = 1000L,
+                capturedAt = 1000L,
+                thumbnailHash = "remote-hash"
+            ),
+            cryptoMapping = null
+        )
+
+        val result = loader.loadThumbnail(item, masterKey = null, targetPx = 16)
+        assertNotNull(result)
+        assertEquals(result, loader.getFromMemoryCache(fileId))
+    }
 }
 
