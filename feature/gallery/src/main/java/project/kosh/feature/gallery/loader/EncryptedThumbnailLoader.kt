@@ -58,6 +58,13 @@ class EncryptedThumbnailLoader @Inject constructor(
     private val downloadSemaphore = Semaphore(4)
     private val decodeSemaphore = Semaphore(4)
 
+    internal fun ensureDiskCacheDir(): File {
+        if (!diskCacheDir.exists()) {
+            diskCacheDir.mkdirs()
+        }
+        return diskCacheDir
+    }
+
     init {
         purgeCoordinator?.registerListener {
             clearMemoryCache()
@@ -68,12 +75,14 @@ class EncryptedThumbnailLoader @Inject constructor(
     fun getFromMemoryCache(key: String): Bitmap? = memoryCache.get(key)
 
     fun hasDiskCache(fileId: String): Boolean {
-        val diskFile = File(diskCacheDir, "$fileId.webp")
+        val dir = ensureDiskCacheDir()
+        val diskFile = File(dir, "$fileId.webp")
         return diskFile.exists() && diskFile.length() > 0
     }
 
     fun cacheDecryptedThumbnail(fileId: String, plaintextBytes: ByteArray, targetPx: Int = 256): Bitmap? {
-        val diskFile = File(diskCacheDir, "$fileId.webp")
+        val dir = ensureDiskCacheDir()
+        val diskFile = File(dir, "$fileId.webp")
         if (!diskFile.exists() || diskFile.length() == 0L) {
             try {
                 diskFile.writeBytes(plaintextBytes)
@@ -357,7 +366,7 @@ class EncryptedThumbnailLoader @Inject constructor(
         memoryCache.get(fileId)?.let { return@withContext it }
 
         // Tier 2: Check L2 Local Disk Cache
-        val diskFile = File(diskCacheDir, "$fileId.webp")
+        val diskFile = File(ensureDiskCacheDir(), "$fileId.webp")
         if (diskFile.exists() && diskFile.length() > 0) {
             val diskBitmap = decodeSemaphore.withPermit {
                 memoryCache.get(fileId)?.let { return@withPermit it }
@@ -390,18 +399,19 @@ class EncryptedThumbnailLoader @Inject constructor(
         val remoteResult = downloadSemaphore.withPermit {
             // Re-check L1 and L2 within permit in case a concurrent fetch completed
             memoryCache.get(fileId)?.let { return@withPermit it }
-            if (diskFile.exists() && diskFile.length() > 0) {
+            val currentDiskFile = File(ensureDiskCacheDir(), "$fileId.webp")
+            if (currentDiskFile.exists() && currentDiskFile.length() > 0) {
                 try {
                     val bitmap = decodeSemaphore.withPermit {
                         memoryCache.get(fileId) ?: withContext(Dispatchers.Default) {
-                            decodeHardwareBitmap(diskFile, targetPx)?.also {
+                            decodeHardwareBitmap(currentDiskFile, targetPx)?.also {
                                 memoryCache.put(fileId, it)
                             }
                         }
                     }
                     if (bitmap != null) return@withPermit bitmap
                 } catch (_: Exception) {
-                    diskFile.delete()
+                    currentDiskFile.delete()
                 }
             }
 
@@ -418,11 +428,16 @@ class EncryptedThumbnailLoader @Inject constructor(
                                     val rawDek = AesGcmEnvelope.unwrapKey(wrappedDek, masterKey.keyBytes)
                                     val plaintextWebp = AesGcmEnvelope.decrypt(encryptedBytes, rawDek)
                                     withContext(Dispatchers.IO) {
-                                        diskFile.writeBytes(plaintextWebp)
+                                        try {
+                                            ensureDiskCacheDir()
+                                            currentDiskFile.writeBytes(plaintextWebp)
+                                        } catch (_: Exception) {
+                                            // Non-fatal disk cache write failure
+                                        }
                                     }
                                     decodeSemaphore.withPermit {
                                         decodeHardwareBitmap(plaintextWebp, targetPx)
-                                            ?: decodeHardwareBitmap(diskFile, targetPx)
+                                            ?: decodeHardwareBitmap(currentDiskFile, targetPx)
                                     }
                                 }
                                 if (bitmap != null) {
@@ -461,6 +476,6 @@ class EncryptedThumbnailLoader @Inject constructor(
      * Purges all plaintext decrypted thumbnail previews from the local disk cache.
      */
     fun clearDiskCache() {
-        diskCacheDir.listFiles()?.forEach { it.delete() }
+        ensureDiskCacheDir().listFiles()?.forEach { it.delete() }
     }
 }

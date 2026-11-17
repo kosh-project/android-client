@@ -484,5 +484,50 @@ class EncryptedThumbnailLoaderTest {
         assertNotNull(result)
         assertEquals(result, loader.getFromMemoryCache(fileId))
     }
+
+    @Test
+    fun loadThumbnail_recoversWhenDiskCacheDirectoryWasDeleted() = runTest {
+        // Delete the root kosh_thumbnails directory completely from disk
+        loader.diskCacheDir.deleteRecursively()
+        assertFalse(loader.diskCacheDir.exists())
+
+        val fileId = "test-deleted-dir"
+        val testBitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val plainBytes = stream.toByteArray()
+
+        val dek = ByteArray(32) { (it + 5).toByte() }
+        val masterKey = MasterVaultKey(ByteArray(32) { (it + 20).toByte() })
+        val encryptedBytes = AesGcmEnvelope.encrypt(plainBytes, dek)
+        val wrappedDekHex = AesGcmEnvelope.wrapKey(dek, masterKey.keyBytes)
+        val thumbHash = "blake3-cas-deleted-dir-hash"
+
+        coEvery { mockAssetClient.downloadAsset(thumbHash, any()) } answers {
+            val destFile = secondArg<File>()
+            destFile.writeBytes(encryptedBytes)
+            NetworkResult.Success(destFile)
+        }
+
+        val item = MediaWithCryptoDetails(
+            asset = MediaAssetEntity(
+                fileId = fileId,
+                mediaType = "image/jpeg",
+                fileSize = plainBytes.size.toLong(),
+                capturedAt = 1000L
+            ),
+            cryptoMapping = MediaCryptoMappingEntity(
+                fileId = fileId,
+                plaintextSha256 = "dummy-sha256",
+                thumbnailCiphertextHash = thumbHash,
+                wrappedDek = wrappedDekHex,
+                wrappedThumbnailDek = wrappedDekHex
+            )
+        )
+
+        val result = loader.loadThumbnail(item, masterKey)
+        assertNotNull(result)
+        assertTrue(loader.diskCacheDir.exists())
+    }
 }
 

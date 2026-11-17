@@ -78,11 +78,13 @@ class UserDataPurgeCoordinator @Inject constructor(
             // Safe isolation
         }
 
-        // 2. Clear thumbnail disk cache directory
+        // 2. Clear thumbnail disk cache directory contents
         try {
             val thumbDir = File(context.cacheDir, "kosh_thumbnails")
             if (thumbDir.exists()) {
-                thumbDir.deleteRecursively()
+                thumbDir.listFiles()?.forEach { it.delete() }
+            } else {
+                thumbDir.mkdirs()
             }
         } catch (_: Exception) {
             // Ignore transient file locking
@@ -91,7 +93,7 @@ class UserDataPurgeCoordinator @Inject constructor(
         // 3. Clear temporary streaming, thumbnail downloads, or media cache files
         try {
             val tempFiles = context.cacheDir.listFiles { _, name ->
-                name.startsWith("kosh_") || name.startsWith("temp_") || name.startsWith("thumb_dl_") || name.endsWith(".bin") || name.endsWith(".tmp")
+                name != "kosh_thumbnails" && (name.startsWith("kosh_") || name.startsWith("temp_") || name.startsWith("thumb_dl_") || name.endsWith(".bin") || name.endsWith(".tmp"))
             }
             tempFiles?.forEach { file ->
                 try {

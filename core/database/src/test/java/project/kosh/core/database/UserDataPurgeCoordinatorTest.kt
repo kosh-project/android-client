@@ -106,8 +106,9 @@ class UserDataPurgeCoordinatorTest {
         assertEquals(0, database.mediaAssetDao().getCount())
         assertFalse(purgeCoordinator.hasExistingUserData())
 
-        // Verify thumbnail directory and temporary chunk files were deleted
-        assertFalse(thumbDir.exists())
+        // Verify thumbnail directory contents and temporary chunk files were deleted
+        assertTrue(thumbDir.exists())
+        assertEquals(0, thumbDir.listFiles()?.size ?: 0)
         assertFalse(tempChunk.exists())
         assertFalse(thumbDl.exists())
 
