@@ -11,7 +11,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FolderShared
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -24,12 +23,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
  * High-transparency rationale dialog displayed to users on first launch,
  * explaining why Kosh needs device media access to perform zero-knowledge encrypted backups.
+ *
+ * @param onGrantPermission Invoked when the user confirms to request system runtime permissions.
+ * @param onDismiss Invoked when the user opts to skip permission granting for now.
  */
 @Composable
 fun PermissionRationaleDialog(
@@ -98,4 +101,22 @@ fun PermissionRationaleDialog(
         },
         shape = RoundedCornerShape(16.dp)
     )
+}
+
+// Previews
+
+@Preview(name = "Rationale Dialog Light", showBackground = true)
+@Composable
+private fun PermissionRationaleDialogLightPreview() {
+    GalleryPreviewTheme(darkTheme = false) {
+        PermissionRationaleDialog(onGrantPermission = {}, onDismiss = {})
+    }
+}
+
+@Preview(name = "Rationale Dialog Dark", showBackground = true)
+@Composable
+private fun PermissionRationaleDialogDarkPreview() {
+    GalleryPreviewTheme(darkTheme = true) {
+        PermissionRationaleDialog(onGrantPermission = {}, onDismiss = {})
+    }
 }
