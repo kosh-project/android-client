@@ -100,7 +100,7 @@ class StreamingEncryptedRequestBody(
                     val iv = AesGcmEnvelope.generateIv()
                     queue.put(EncryptedChunk.Data(iv))
 
-                    val cipher = AesGcmEnvelope.createEncryptCipher(dek, iv)
+                    val cipher = AesGcmEnvelope.createStreamingEncryptCipher(dek, iv)
                     val buffer = ByteArray(chunkSize)
                     var bytesRead = 0
                     var totalPlaintextRead = 0L
@@ -109,7 +109,7 @@ class StreamingEncryptedRequestBody(
                         if (bytesRead > 0) {
                             totalPlaintextRead += bytesRead
                             val ciphertext = cipher.update(buffer, 0, bytesRead)
-                            if (ciphertext != null && ciphertext.isNotEmpty()) {
+                            if (ciphertext.isNotEmpty()) {
                                 queue.put(EncryptedChunk.Data(ciphertext))
                             }
                         }
@@ -123,7 +123,7 @@ class StreamingEncryptedRequestBody(
                         }
 
                         val finalBytes = cipher.doFinal()
-                        if (finalBytes != null && finalBytes.isNotEmpty()) {
+                        if (finalBytes.isNotEmpty()) {
                             queue.put(EncryptedChunk.Data(finalBytes))
                         }
                         queue.put(EncryptedChunk.Done)
@@ -245,7 +245,7 @@ class StreamingEncryptedRequestBody(
             queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
             onProgress: ((bytesWritten: Long, totalBytes: Long) -> Unit)? = null
         ): StreamingEncryptedRequestBody {
-            val resolvedSize = if (plaintextSize > 0L) {
+            val resolvedSize = if (plaintextSize >= 0L) {
                 plaintextSize
             } else {
                 resolvePlaintextSize(contentResolver, uri, plaintextSize)
