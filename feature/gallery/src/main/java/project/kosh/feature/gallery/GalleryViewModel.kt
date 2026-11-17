@@ -18,7 +18,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -56,9 +58,15 @@ import project.kosh.core.network.ServerHealthPinger
 import project.kosh.feature.gallery.loader.EncryptedThumbnailLoader
 import project.kosh.feature.gallery.model.BatchUploadState
 import project.kosh.feature.gallery.model.DiscoveredMediaItem
+import project.kosh.feature.gallery.model.GalleryDateGroup
 import project.kosh.feature.gallery.model.MediaFolder
 import project.kosh.feature.gallery.sync.MediaFolderScanner
 import project.kosh.feature.gallery.sync.SyncFolderPreferences
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
 
@@ -125,6 +133,7 @@ class GalleryViewModel @Inject constructor(
 ) : ViewModel() {
 
     internal var ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+    internal var defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
 
     private val _pingResult = MutableStateFlow<PingResult?>(null)
     val pingResult: StateFlow<PingResult?> = _pingResult.asStateFlow()
@@ -179,13 +188,70 @@ class GalleryViewModel @Inject constructor(
             initialValue = emptyList()
         )
 
+    /**
+     * Background-computed date groups on [Dispatchers.Default] for zero-allocation UI composition.
+     */
+    val groupedGalleryItems: StateFlow<List<GalleryDateGroup>> =
+        galleryItems
+            .map { items ->
+                withContext(defaultDispatcher) {
+                    computeDateGroups(items)
+                }
+            }
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5000),
+                initialValue = emptyList()
+            )
+
+    private fun computeDateGroups(items: List<MediaWithCryptoDetails>): List<GalleryDateGroup> {
+        if (items.isEmpty()) return emptyList()
+        val zoneId = ZoneId.systemDefault()
+        val today = LocalDate.now(zoneId)
+        val yesterday = today.minusDays(1)
+        val sameYearFormatter = DateTimeFormatter.ofPattern("d MMM", Locale.getDefault())
+        val diffYearFormatter = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault())
+
+        val map = linkedMapOf<LocalDate, MutableList<MediaWithCryptoDetails>>()
+        for (item in items) {
+            val ts = if (item.asset.capturedAt > 0) item.asset.capturedAt else item.asset.createdAt
+            val date = Instant.ofEpochMilli(ts).atZone(zoneId).toLocalDate()
+            map.getOrPut(date) { mutableListOf() }.add(item)
+        }
+
+        return map.map { (date, groupItems) ->
+            val title = when {
+                date.isEqual(today) -> "Today"
+                date.isEqual(yesterday) -> "Yesterday"
+                date.year == today.year -> sameYearFormatter.format(date)
+                else -> diffYearFormatter.format(date)
+            }
+            GalleryDateGroup(key = date.toString(), title = title, items = groupItems)
+        }
+    }
+
     // Per-file upload progress stage map keyed by fileId and content URI string
     private val _activeUploadStages = MutableStateFlow<Map<String, UploadStage>>(emptyMap())
     val activeUploadStages: StateFlow<Map<String, UploadStage>> = _activeUploadStages.asStateFlow()
 
+    /**
+     * Isolated observable flow emitting upload stage transitions for a single media asset.
+     */
+    fun getUploadStage(fileId: String): kotlinx.coroutines.flow.Flow<UploadStage?> =
+        _activeUploadStages.map { it[fileId] }.distinctUntilChanged()
+
     // Aggregate batch upload progress state for floating bottom bar
     private val _batchUploadState = MutableStateFlow(BatchUploadState())
     val batchUploadState: StateFlow<BatchUploadState> = _batchUploadState.asStateFlow()
+
+    val isBatchUploading: StateFlow<Boolean> = _batchUploadState
+        .map { it.isUploading }
+        .distinctUntilChanged()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = false
+        )
 
     // Folder sync state
     private val _mediaFolders = MutableStateFlow<List<MediaFolder>>(emptyList())
@@ -285,8 +351,6 @@ class GalleryViewModel @Inject constructor(
                     mimeType = mimeType,
                     fileSize = fileSize
                 )
-                // Pre-cache local preview in L1 memory cache for zero-coroutine composition
-                thumbnailLoader.loadLocalThumbnail(contentResolver, uri, fileId, mimeType)
                 newTasks.add(task)
                 newTasksMap[fileId] = task
             }
@@ -431,6 +495,7 @@ class GalleryViewModel @Inject constructor(
         _activeUploadStages.value = _activeUploadStages.value + (task.fileId to initialStage) + (task.uri.toString() to initialStage)
 
         var lastProgressUpdateMillis = 0L
+        var lastStageType: String? = null
         val result = mediaUploadPipeline.uploadFromUri(
             contentResolver = task.contentResolver,
             uri = task.uri,
@@ -441,12 +506,18 @@ class GalleryViewModel @Inject constructor(
             customCapturedAt = task.dateModified,
             onProgress = { stage ->
                 val now = System.currentTimeMillis()
-                val isThrottled = stage is UploadStage.Uploading &&
-                    _activeUploadStages.value[task.fileId] is UploadStage.Uploading &&
-                    (now - lastProgressUpdateMillis < 1200L) &&
-                    stage.progress < 1f
+                val isThrottled = when (stage) {
+                    is UploadStage.Hashing -> (lastStageType == "hashing") && (now - lastProgressUpdateMillis < 500L) && stage.progress < 1f
+                    is UploadStage.Uploading -> (lastStageType == "uploading") && (now - lastProgressUpdateMillis < 500L) && stage.progress < 1f
+                    else -> false
+                }
                 if (!isThrottled) {
                     lastProgressUpdateMillis = now
+                    lastStageType = when (stage) {
+                        is UploadStage.Hashing -> "hashing"
+                        is UploadStage.Uploading -> "uploading"
+                        else -> "other"
+                    }
                     _activeUploadStages.value = _activeUploadStages.value + (task.fileId to stage) + (task.uri.toString() to stage)
                     val sent = when (stage) {
                         is UploadStage.Uploading -> {
