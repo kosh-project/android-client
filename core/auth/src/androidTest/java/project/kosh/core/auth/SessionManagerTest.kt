@@ -75,4 +75,11 @@ class SessionManagerTest {
             retrievedKey.keyBytes
         )
     }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testSaveVaultKeyRejectsClosedKey() {
+        val closedKey = MasterVaultKey(ByteArray(32) { 42.toByte() })
+        closedKey.close()
+        sessionManager.saveVaultKey(closedKey)
+    }
 }
