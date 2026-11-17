@@ -1316,7 +1316,7 @@ class GalleryViewModelTest {
         viewModel.enqueueUploads(mockResolver, listOf(mockUri))
         testScheduler.runCurrent()
 
-        verify(exactly = 0) { mockThumbnailLoader.loadLocalThumbnail(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { mockThumbnailLoader.loadLocalThumbnail(any(), any(), any(), any(), any()) }
     }
 
     @Test

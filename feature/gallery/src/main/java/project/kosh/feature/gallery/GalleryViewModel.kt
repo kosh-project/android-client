@@ -652,13 +652,15 @@ class GalleryViewModel @Inject constructor(
     suspend fun loadThumbnail(item: MediaWithCryptoDetails, targetPx: Int = 256): Bitmap? {
         val inFlight = _inFlightUploads.value[item.asset.fileId]
         if (inFlight != null) {
-            val localBitmap = thumbnailLoader.loadLocalThumbnail(
-                contentResolver = inFlight.contentResolver,
-                uri = inFlight.uri,
-                fileId = item.asset.fileId,
-                mimeType = inFlight.mimeType,
-                targetPx = targetPx
-            )
+            val localBitmap = withContext(ioDispatcher) {
+                thumbnailLoader.loadLocalThumbnail(
+                    contentResolver = inFlight.contentResolver,
+                    uri = inFlight.uri,
+                    fileId = item.asset.fileId,
+                    mimeType = inFlight.mimeType,
+                    targetPx = targetPx
+                )
+            }
             if (localBitmap != null) return localBitmap
         }
         val masterKey = authRepository.getVaultKey()

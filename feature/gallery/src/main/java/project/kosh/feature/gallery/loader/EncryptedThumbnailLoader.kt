@@ -224,43 +224,46 @@ class EncryptedThumbnailLoader @Inject constructor(
     /**
      * Decodes and caches a local preview bitmap for an in-flight upload item.
      */
-    fun loadLocalThumbnail(
+    suspend fun loadLocalThumbnail(
         contentResolver: ContentResolver,
         uri: Uri,
         fileId: String? = null,
         mimeType: String? = null,
         targetPx: Int = 256
-    ): Bitmap? {
+    ): Bitmap? = withContext(Dispatchers.IO) {
         val cacheKey = fileId ?: uri.toString()
-        memoryCache.get(cacheKey)?.let { return it }
+        memoryCache.get(cacheKey)?.let { return@withContext it }
 
-        val isVideo = (mimeType ?: contentResolver.getType(uri))?.startsWith("video/", ignoreCase = true) == true
-        val bitmap = if (isVideo) {
-            extractVideoThumbnail(contentResolver, uri, targetSize = targetPx)
-        } else {
-            try {
-                val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = targetPx)
-                val options = BitmapFactory.Options().apply {
-                    inSampleSize = sampleSize
-                    inPreferredConfig = Bitmap.Config.HARDWARE
-                }
-                contentResolver.openInputStream(uri)?.use { stream ->
-                    BitmapFactory.decodeStream(stream, null, options)
-                } ?: contentResolver.openInputStream(uri)?.use { stream ->
-                    val fallbackOptions = BitmapFactory.Options().apply {
+        decodeSemaphore.withPermit {
+            memoryCache.get(cacheKey)?.let { return@withPermit it }
+            val isVideo = (mimeType ?: contentResolver.getType(uri))?.startsWith("video/", ignoreCase = true) == true
+            val bitmap = if (isVideo) {
+                extractVideoThumbnail(contentResolver, uri, targetSize = targetPx)
+            } else {
+                try {
+                    val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = targetPx)
+                    val options = BitmapFactory.Options().apply {
                         inSampleSize = sampleSize
+                        inPreferredConfig = Bitmap.Config.HARDWARE
                     }
-                    BitmapFactory.decodeStream(stream, null, fallbackOptions)
+                    contentResolver.openInputStream(uri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream, null, options)
+                    } ?: contentResolver.openInputStream(uri)?.use { stream ->
+                        val fallbackOptions = BitmapFactory.Options().apply {
+                            inSampleSize = sampleSize
+                        }
+                        BitmapFactory.decodeStream(stream, null, fallbackOptions)
+                    }
+                } catch (_: Exception) {
+                    null
                 }
-            } catch (_: Exception) {
-                null
             }
-        }
 
-        if (bitmap != null) {
-            memoryCache.put(cacheKey, bitmap)
+            if (bitmap != null) {
+                memoryCache.put(cacheKey, bitmap)
+            }
+            bitmap
         }
-        return bitmap
     }
 
     /**
@@ -309,42 +312,60 @@ class EncryptedThumbnailLoader @Inject constructor(
         uri: Uri,
         targetSize: Int
     ): Bitmap? {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val rawFrame: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                return contentResolver.loadThumbnail(uri, Size(targetSize, targetSize), null)
-            } catch (_: Exception) {
-                // Fallback to MediaMetadataRetriever
-            }
-        }
-
-        val retriever = MediaMetadataRetriever()
-        return try {
-            val pfd = try {
-                contentResolver.openFileDescriptor(uri, "r")
+                contentResolver.loadThumbnail(uri, Size(targetSize, targetSize), null)
             } catch (_: Exception) {
                 null
             }
-            if (pfd != null) {
-                pfd.use {
-                    retriever.setDataSource(it.fileDescriptor)
+        } else {
+            null
+        } ?: run {
+            val retriever = MediaMetadataRetriever()
+            try {
+                val pfd = try {
+                    contentResolver.openFileDescriptor(uri, "r")
+                } catch (_: Exception) {
+                    null
+                }
+                if (pfd != null) {
+                    pfd.use {
+                        retriever.setDataSource(it.fileDescriptor)
+                        retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                            ?: retriever.frameAtTime
+                    }
+                } else if (uri.path != null && File(uri.path!!).exists()) {
+                    retriever.setDataSource(uri.path)
+                    retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        ?: retriever.frameAtTime
+                } else {
+                    retriever.setDataSource(context, uri)
                     retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                         ?: retriever.frameAtTime
                 }
-            } else if (uri.path != null && File(uri.path!!).exists()) {
-                retriever.setDataSource(uri.path)
-                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    ?: retriever.frameAtTime
-            } else {
-                retriever.setDataSource(context, uri)
-                retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    ?: retriever.frameAtTime
+            } catch (_: Exception) {
+                null
+            } finally {
+                try {
+                    retriever.release()
+                } catch (_: Exception) {}
             }
-        } catch (_: Exception) {
-            null
-        } finally {
-            try {
-                retriever.release()
-            } catch (_: Exception) {}
+        }
+
+        if (rawFrame == null) return null
+
+        val maxDim = maxOf(rawFrame.width, rawFrame.height)
+        return if (maxDim > targetSize) {
+            val scale = targetSize.toFloat() / maxDim
+            val dstWidth = (rawFrame.width * scale).toInt().coerceAtLeast(1)
+            val dstHeight = (rawFrame.height * scale).toInt().coerceAtLeast(1)
+            val scaled = Bitmap.createScaledBitmap(rawFrame, dstWidth, dstHeight, true)
+            if (scaled != rawFrame) {
+                rawFrame.recycle()
+            }
+            scaled
+        } else {
+            rawFrame
         }
     }
 
