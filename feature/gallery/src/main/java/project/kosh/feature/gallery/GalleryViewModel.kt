@@ -174,14 +174,16 @@ class GalleryViewModel @Inject constructor(
                 .map { list -> list.filter { !it.asset.isDeleted } },
             _inFlightUploads
         ) { persistedList, inFlightMap ->
-            val persistedFileIds = persistedList.map { it.asset.fileId }.toSet()
-            val inFlightItems = inFlightMap.values
-                .filter { it.fileId !in persistedFileIds }
-                .map { it.toMediaWithCryptoDetails() }
-            (inFlightItems + persistedList).sortedWith(
-                compareByDescending<MediaWithCryptoDetails> { it.asset.capturedAt }
-                    .thenByDescending { it.asset.fileId }
-            )
+            withContext(defaultDispatcher) {
+                val persistedFileIds = persistedList.mapTo(HashSet(persistedList.size)) { it.asset.fileId }
+                val inFlightItems = inFlightMap.values
+                    .filter { it.fileId !in persistedFileIds }
+                    .map { it.toMediaWithCryptoDetails() }
+                (inFlightItems + persistedList).sortedWith(
+                    compareByDescending<MediaWithCryptoDetails> { it.asset.capturedAt }
+                        .thenByDescending { it.asset.fileId }
+                )
+            }
         }.stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
@@ -297,6 +299,7 @@ class GalleryViewModel @Inject constructor(
     val pairingSuccessMessage: StateFlow<String?> = _pairingSuccessMessage.asStateFlow()
 
     // Sequential Upload Queue
+    private val batchLock = Any()
     private val uploadChannel = Channel<InFlightUploadItem>(Channel.UNLIMITED)
     private var uploadWorkerJob: Job? = null
     private var totalBatchCount = 0
@@ -356,15 +359,17 @@ class GalleryViewModel @Inject constructor(
             }
 
             val addedBytes = newTasks.sumOf { it.fileSize }
-            totalBatchCount += uniqueUris.size
-            totalBatchBytes += addedBytes
-            _batchUploadState.value = _batchUploadState.value.copy(
-                totalItems = totalBatchCount,
-                completedItems = completedBatchCount,
-                totalBatchBytes = totalBatchBytes,
-                completedBatchBytes = completedBatchBytes,
-                isUploading = true
-            )
+            synchronized(batchLock) {
+                totalBatchCount += uniqueUris.size
+                totalBatchBytes += addedBytes
+                _batchUploadState.value = _batchUploadState.value.copy(
+                    totalItems = totalBatchCount,
+                    completedItems = completedBatchCount,
+                    totalBatchBytes = totalBatchBytes,
+                    completedBatchBytes = completedBatchBytes,
+                    isUploading = true
+                )
+            }
 
             _inFlightUploads.value = _inFlightUploads.value + newTasksMap
 
@@ -422,7 +427,8 @@ class GalleryViewModel @Inject constructor(
         uploadWorkerJob = viewModelScope.launch(ioDispatcher) {
             for (task in uploadChannel) {
                 processSingleUpload(task)
-                if (completedBatchCount >= totalBatchCount) {
+                val shouldSync = synchronized(batchLock) { completedBatchCount >= totalBatchCount }
+                if (shouldSync) {
                     stopLedgerTicker()
                     val key = authRepository.getVaultKey() ?: masterKey
                     if (key != null && !key.isClosed) {
@@ -437,19 +443,23 @@ class GalleryViewModel @Inject constructor(
                     // Keep completion state visible for smooth animation exit
                     delay(800L)
 
-                    _batchUploadState.value = _batchUploadState.value.copy(
-                        isUploading = false,
-                        totalItems = 0,
-                        completedItems = 0,
-                        totalBatchBytes = 0L,
-                        completedBatchBytes = 0L,
-                        currentItemBytesSent = 0L,
-                        currentStage = UploadStage.Completed
-                    )
-                    totalBatchCount = 0
-                    completedBatchCount = 0
-                    totalBatchBytes = 0L
-                    completedBatchBytes = 0L
+                    synchronized(batchLock) {
+                        if (completedBatchCount >= totalBatchCount) {
+                            _batchUploadState.value = _batchUploadState.value.copy(
+                                isUploading = false,
+                                totalItems = 0,
+                                completedItems = 0,
+                                totalBatchBytes = 0L,
+                                completedBatchBytes = 0L,
+                                currentItemBytesSent = 0L,
+                                currentStage = UploadStage.Completed
+                            )
+                            totalBatchCount = 0
+                            completedBatchCount = 0
+                            totalBatchBytes = 0L
+                            completedBatchBytes = 0L
+                        }
+                    }
                 }
             }
         }
@@ -459,15 +469,18 @@ class GalleryViewModel @Inject constructor(
         val masterKey = authRepository.getVaultKey()
 
         if (masterKey == null) {
-            completedBatchCount++
-            completedBatchBytes += task.fileSize
             val errorStage = UploadStage.Failed("Master Vault Key locked. Please sign in.")
-            _batchUploadState.value = _batchUploadState.value.copy(
-                completedItems = completedBatchCount,
-                completedBatchBytes = completedBatchBytes,
-                currentItemBytesSent = 0L,
-                currentStage = errorStage
-            )
+            synchronized(batchLock) {
+                completedBatchCount++
+                completedBatchBytes += task.fileSize
+                _batchUploadState.value = _batchUploadState.value.copy(
+                    completedItems = completedBatchCount,
+                    totalBatchBytes = totalBatchBytes,
+                    completedBatchBytes = completedBatchBytes,
+                    currentItemBytesSent = 0L,
+                    currentStage = errorStage
+                )
+            }
             _activeUploadStages.value = _activeUploadStages.value + (task.fileId to errorStage) + (task.uri.toString() to errorStage)
             _uploadState.value = UploadUiState.Error("Master Vault Key locked")
             delay(1200L)
@@ -480,15 +493,17 @@ class GalleryViewModel @Inject constructor(
             startLedgerTicker(masterKey)
         }
 
-        val currentIndex = completedBatchCount + 1
-        _batchUploadState.value = _batchUploadState.value.copy(
-            currentItemIndex = currentIndex,
-            currentFileName = task.fileName,
-            currentStage = UploadStage.Hashing(0f),
-            totalBatchBytes = totalBatchBytes,
-            completedBatchBytes = completedBatchBytes,
-            currentItemBytesSent = 0L
-        )
+        synchronized(batchLock) {
+            val currentIndex = completedBatchCount + 1
+            _batchUploadState.value = _batchUploadState.value.copy(
+                currentItemIndex = currentIndex,
+                currentFileName = task.fileName,
+                currentStage = UploadStage.Hashing(0f),
+                totalBatchBytes = totalBatchBytes,
+                completedBatchBytes = completedBatchBytes,
+                currentItemBytesSent = 0L
+            )
+        }
         _uploadState.value = UploadUiState.Uploading(task.fileName)
 
         val initialStage = UploadStage.Hashing(0f)
@@ -532,30 +547,34 @@ class GalleryViewModel @Inject constructor(
                         }
                         else -> 0L
                     }
-                    _batchUploadState.value = _batchUploadState.value.copy(
-                        currentStage = stage,
-                        currentItemBytesSent = sent
-                    )
+                    synchronized(batchLock) {
+                        _batchUploadState.value = _batchUploadState.value.copy(
+                            currentStage = stage,
+                            currentItemBytesSent = sent
+                        )
+                    }
                 }
             }
         )
 
         when (result) {
             is UploadResult.Success -> {
-                completedBatchCount++
                 val actualSize = if (task.fileSize > 0L) task.fileSize else result.asset.fileSize
-                if (task.fileSize <= 0L && actualSize > 0L) {
-                    totalBatchBytes += actualSize
+                synchronized(batchLock) {
+                    completedBatchCount++
+                    if (task.fileSize <= 0L && actualSize > 0L) {
+                        totalBatchBytes += actualSize
+                    }
+                    completedBatchBytes += actualSize
+                    _batchUploadState.value = _batchUploadState.value.copy(
+                        completedItems = completedBatchCount,
+                        totalBatchBytes = totalBatchBytes,
+                        completedBatchBytes = completedBatchBytes,
+                        currentItemBytesSent = 0L,
+                        currentStage = UploadStage.Completed
+                    )
                 }
-                completedBatchBytes += actualSize
                 val resolvedFileId = result.asset.fileId
-                _batchUploadState.value = _batchUploadState.value.copy(
-                    completedItems = completedBatchCount,
-                    totalBatchBytes = totalBatchBytes,
-                    completedBatchBytes = completedBatchBytes,
-                    currentItemBytesSent = 0L,
-                    currentStage = UploadStage.Completed
-                )
                 _activeUploadStages.value = _activeUploadStages.value + (task.fileId to UploadStage.Completed) + (resolvedFileId to UploadStage.Completed) + (task.uri.toString() to UploadStage.Completed)
                 _uploadState.value = UploadUiState.Success(task.fileName, "Stored in vault")
 
@@ -565,15 +584,18 @@ class GalleryViewModel @Inject constructor(
                 _inFlightUploads.value = _inFlightUploads.value - task.fileId
             }
             is UploadResult.Error -> {
-                completedBatchCount++
-                completedBatchBytes += task.fileSize
                 val errorStage = UploadStage.Failed(result.message)
-                _batchUploadState.value = _batchUploadState.value.copy(
-                    completedItems = completedBatchCount,
-                    completedBatchBytes = completedBatchBytes,
-                    currentItemBytesSent = 0L,
-                    currentStage = errorStage
-                )
+                synchronized(batchLock) {
+                    completedBatchCount++
+                    completedBatchBytes += task.fileSize
+                    _batchUploadState.value = _batchUploadState.value.copy(
+                        completedItems = completedBatchCount,
+                        totalBatchBytes = totalBatchBytes,
+                        completedBatchBytes = completedBatchBytes,
+                        currentItemBytesSent = 0L,
+                        currentStage = errorStage
+                    )
+                }
                 _activeUploadStages.value = _activeUploadStages.value + (task.fileId to errorStage) + (task.uri.toString() to errorStage)
                 _uploadState.value = UploadUiState.Error(result.message)
                 delay(1200L)
@@ -713,12 +735,18 @@ class GalleryViewModel @Inject constructor(
                 newTasksMap[fileId] = task
             }
 
-            totalBatchCount += newTasks.size
-            _batchUploadState.value = _batchUploadState.value.copy(
-                totalItems = totalBatchCount,
-                completedItems = completedBatchCount,
-                isUploading = true
-            )
+            val addedBytes = newTasks.sumOf { it.fileSize }
+            synchronized(batchLock) {
+                totalBatchCount += newTasks.size
+                totalBatchBytes += addedBytes
+                _batchUploadState.value = _batchUploadState.value.copy(
+                    totalItems = totalBatchCount,
+                    completedItems = completedBatchCount,
+                    totalBatchBytes = totalBatchBytes,
+                    completedBatchBytes = completedBatchBytes,
+                    isUploading = true
+                )
+            }
 
             _inFlightUploads.value = _inFlightUploads.value + newTasksMap
 
@@ -750,18 +778,20 @@ class GalleryViewModel @Inject constructor(
     }
 
     fun dismissBatchBar() {
-        _batchUploadState.value = _batchUploadState.value.copy(
-            isUploading = false,
-            totalItems = 0,
-            completedItems = 0,
-            totalBatchBytes = 0L,
-            completedBatchBytes = 0L,
-            currentItemBytesSent = 0L
-        )
-        totalBatchCount = 0
-        completedBatchCount = 0
-        totalBatchBytes = 0L
-        completedBatchBytes = 0L
+        synchronized(batchLock) {
+            _batchUploadState.value = _batchUploadState.value.copy(
+                isUploading = false,
+                totalItems = 0,
+                completedItems = 0,
+                totalBatchBytes = 0L,
+                completedBatchBytes = 0L,
+                currentItemBytesSent = 0L
+            )
+            totalBatchCount = 0
+            completedBatchCount = 0
+            totalBatchBytes = 0L
+            completedBatchBytes = 0L
+        }
     }
 
     fun dismissUploadState() {
@@ -1015,7 +1045,8 @@ class GalleryViewModel @Inject constructor(
         var name: String? = null
         var size = 0L
         try {
-            resolver.query(uri, null, null, null)?.use { cursor ->
+            val projection = arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
+            resolver.query(uri, projection, null, null, null)?.use { cursor ->
                 val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                 val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
                 if (cursor.moveToFirst()) {
