@@ -28,25 +28,28 @@ class HardwareStreamingAesGcmCipher(
     init {
         val keySpec = SecretKeySpec(key, "AES")
 
-        // Derivation of H = AES_ECB(K, 0^16) and T0 = AES_ECB(K, J0)
-        val ecbCipher = Cipher.getInstance("AES/ECB/NoPadding")
-        ecbCipher.init(Cipher.ENCRYPT_MODE, keySpec)
-
         val zeroBlock = ByteArray(16)
-        val h = ecbCipher.doFinal(zeroBlock)
+
+        ctrCipher = Cipher.getInstance("AES/CTR/NoPadding")
+
+        // Derivation of H = AES_K(0^16) using CTR mode with IV = 0^16:
+        // 0^16 xor AES_K(0^16) = AES_K(0^16) = H
+        ctrCipher.init(Cipher.ENCRYPT_MODE, keySpec, IvParameterSpec(zeroBlock))
+        val h = ctrCipher.doFinal(zeroBlock)
         ghash = GhashAccumulator(h)
 
+        // Derivation of T0 = AES_K(J0) using CTR mode with IV = J0:
+        // 0^16 xor AES_K(J0) = AES_K(J0) = T0
         val j0 = ByteArray(16)
         System.arraycopy(iv, 0, j0, 0, IV_SIZE_BYTES)
         j0[15] = 1.toByte()
-        t0 = ecbCipher.doFinal(j0)
+        ctrCipher.init(Cipher.ENCRYPT_MODE, keySpec, IvParameterSpec(j0))
+        t0 = ctrCipher.doFinal(zeroBlock)
 
         // Initial counter for CTR mode: J1 = inc32(J0) = IV || 0^31 || 2
         val j1 = ByteArray(16)
         System.arraycopy(iv, 0, j1, 0, IV_SIZE_BYTES)
         j1[15] = 2.toByte()
-
-        ctrCipher = Cipher.getInstance("AES/CTR/NoPadding")
         ctrCipher.init(Cipher.ENCRYPT_MODE, keySpec, IvParameterSpec(j1))
     }
 
