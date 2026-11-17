@@ -395,5 +395,94 @@ class EncryptedThumbnailLoaderTest {
         assertNotNull(result)
         assertEquals(2, callCount)
     }
+
+    @Test
+    fun getFromMemoryCache_returnsCachedBitmapDirectly() {
+        val fileId = "test-get-mem"
+        assertNull(loader.getFromMemoryCache(fileId))
+
+        val bitmap = Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888)
+        loader.memoryCache.put(fileId, bitmap)
+
+        assertEquals(bitmap, loader.getFromMemoryCache(fileId))
+    }
+
+    @Test
+    fun hasDiskCache_detectsDiskCachePresence() {
+        val fileId = "test-has-disk"
+        assertFalse(loader.hasDiskCache(fileId))
+
+        val diskFile = File(loader.diskCacheDir, "$fileId.webp")
+        diskFile.writeBytes(byteArrayOf(1, 2, 3))
+        assertTrue(loader.hasDiskCache(fileId))
+    }
+
+    @Test
+    fun cacheDecryptedThumbnail_persistsToDiskAndPopulatesMemoryCache() {
+        val fileId = "test-pre-cache"
+        val testBitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val plainBytes = stream.toByteArray()
+
+        val result = loader.cacheDecryptedThumbnail(fileId, plainBytes)
+        assertNotNull(result)
+        assertEquals(result, loader.getFromMemoryCache(fileId))
+
+        val diskFile = File(loader.diskCacheDir, "$fileId.webp")
+        assertTrue(diskFile.exists())
+        assertEquals(plainBytes.size, diskFile.readBytes().size)
+    }
+
+    @Test
+    fun loadThumbnail_prefersDiskCacheOverNetwork() = runTest {
+        val fileId = "test-disk-prefer"
+        val testBitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val diskFile = File(loader.diskCacheDir, "$fileId.webp")
+        diskFile.writeBytes(stream.toByteArray())
+
+        val item = MediaWithCryptoDetails(
+            asset = MediaAssetEntity(
+                fileId = fileId,
+                mediaType = "image/jpeg",
+                fileSize = 1000L,
+                capturedAt = 1000L,
+                thumbnailHash = "remote-hash"
+            ),
+            cryptoMapping = null
+        )
+
+        val result = loader.loadThumbnail(item, masterKey = null)
+        assertNotNull(result)
+        assertEquals(result, loader.getFromMemoryCache(fileId))
+        coVerify(exactly = 0) { mockAssetClient.downloadAsset(any(), any()) }
+    }
+
+    @Test
+    fun loadThumbnail_acceptsTargetPxDownsample() = runTest {
+        val fileId = "test-target-px"
+        val testBitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val diskFile = File(loader.diskCacheDir, "$fileId.webp")
+        diskFile.writeBytes(stream.toByteArray())
+
+        val item = MediaWithCryptoDetails(
+            asset = MediaAssetEntity(
+                fileId = fileId,
+                mediaType = "image/jpeg",
+                fileSize = 1000L,
+                capturedAt = 1000L,
+                thumbnailHash = "remote-hash"
+            ),
+            cryptoMapping = null
+        )
+
+        val result = loader.loadThumbnail(item, masterKey = null, targetPx = 16)
+        assertNotNull(result)
+        assertEquals(result, loader.getFromMemoryCache(fileId))
+    }
 }
 

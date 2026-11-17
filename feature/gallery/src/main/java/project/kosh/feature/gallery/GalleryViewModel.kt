@@ -16,12 +16,15 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withTimeoutOrNull
@@ -252,6 +255,7 @@ class GalleryViewModel @Inject constructor(
         }
         if (authRepository.isLoggedIn()) {
             snapshotScheduler.schedulePeriodicSnapshot()
+            startThumbnailPrefetch()
         }
     }
 
@@ -281,6 +285,8 @@ class GalleryViewModel @Inject constructor(
                     mimeType = mimeType,
                     fileSize = fileSize
                 )
+                // Pre-cache local preview in L1 memory cache for zero-coroutine composition
+                thumbnailLoader.loadLocalThumbnail(contentResolver, uri, fileId, mimeType)
                 newTasks.add(task)
                 newTasksMap[fileId] = task
             }
@@ -507,21 +513,83 @@ class GalleryViewModel @Inject constructor(
     }
 
     /**
+     * Synchronously resolves a cached thumbnail bitmap from L1 memory cache for zero-coroutine composition.
+     */
+    fun getFromMemoryCache(item: MediaWithCryptoDetails): Bitmap? {
+        val fileId = item.asset.fileId
+        thumbnailLoader.getFromMemoryCache(fileId)?.let { return it }
+        val inFlight = _inFlightUploads.value[fileId]
+        if (inFlight != null) {
+            thumbnailLoader.getFromMemoryCache(inFlight.uri.toString())?.let { return it }
+        }
+        return null
+    }
+
+    private var prefetchJob: Job? = null
+
+    /**
+     * Pre-caches decrypted WebP thumbnails into local disk cache in the background for smooth scrolling.
+     */
+    internal fun startThumbnailPrefetch() {
+        if (prefetchJob?.isActive == true) return
+        prefetchJob = viewModelScope.launch(ioDispatcher) {
+            galleryItems.collect { items ->
+                val masterKey = authRepository.getVaultKey() ?: return@collect
+                if (masterKey.isClosed) return@collect
+
+                val candidates = items.filter { item ->
+                    !thumbnailLoader.hasDiskCache(item.asset.fileId) &&
+                        (item.cryptoMapping?.thumbnailCiphertextHash != null || item.asset.thumbnailHash != null)
+                }
+
+                for (item in candidates) {
+                    if (!isActive) break
+                    if (thumbnailLoader.hasDiskCache(item.asset.fileId)) continue
+                    try {
+                        thumbnailLoader.loadThumbnail(item, masterKey)
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+    }
+
+    /**
      * Resolves a thumbnail bitmap for the given [item] through the 2-tier cache and CAS decryptor.
      */
-    suspend fun loadThumbnail(item: MediaWithCryptoDetails): Bitmap? {
+    suspend fun loadThumbnail(item: MediaWithCryptoDetails, targetPx: Int = 256): Bitmap? {
         val inFlight = _inFlightUploads.value[item.asset.fileId]
         if (inFlight != null) {
             val localBitmap = thumbnailLoader.loadLocalThumbnail(
                 contentResolver = inFlight.contentResolver,
                 uri = inFlight.uri,
                 fileId = item.asset.fileId,
-                mimeType = inFlight.mimeType
+                mimeType = inFlight.mimeType,
+                targetPx = targetPx
             )
             if (localBitmap != null) return localBitmap
         }
         val masterKey = authRepository.getVaultKey()
-        return thumbnailLoader.loadThumbnail(item, masterKey)
+        return thumbnailLoader.loadThumbnail(item, masterKey, targetPx)
+    }
+
+    /**
+     * Checks if the given fileId is currently an in-flight upload queued from local storage.
+     */
+    fun isInFlight(fileId: String): Boolean = _inFlightUploads.value.containsKey(fileId)
+
+    /**
+     * Checks if a decrypted WebP thumbnail already exists in the local L2 disk cache.
+     */
+    fun hasDiskCache(fileId: String): Boolean = thumbnailLoader.hasDiskCache(fileId)
+
+    /**
+     * Resolves a thumbnail bitmap for the given [item] without artificial mutex delays,
+     * relying on coroutine structured concurrency and tile debouncing.
+     */
+    suspend fun loadThumbnailStaggered(item: MediaWithCryptoDetails, targetPx: Int = 256): Bitmap? {
+        val cached = getFromMemoryCache(item)
+        if (cached != null) return cached
+        return loadThumbnail(item, targetPx)
     }
 
     /**

@@ -4,6 +4,8 @@ import android.content.ContentResolver
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
+import android.graphics.Rect
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -21,6 +23,7 @@ import project.kosh.core.database.model.MediaWithCryptoDetails
 import project.kosh.core.model.NetworkResult
 import project.kosh.core.network.AssetClient
 import java.io.File
+import java.nio.ByteBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -41,16 +44,144 @@ class EncryptedThumbnailLoader @Inject constructor(
 ) {
     private val maxMemoryBytes = 32 * 1024 * 1024 // 32 MB
     internal val memoryCache = object : LruCache<String, Bitmap>(maxMemoryBytes) {
-        override fun sizeOf(key: String, bitmap: Bitmap): Int = bitmap.byteCount
+        override fun sizeOf(key: String, bitmap: Bitmap): Int {
+            val bytes = try {
+                bitmap.allocationByteCount
+            } catch (_: Exception) {
+                bitmap.byteCount
+            }
+            return if (bytes > 0) bytes else 512 * 512 * 4
+        }
     }
 
     internal val diskCacheDir = File(context.cacheDir, "kosh_thumbnails").apply { mkdirs() }
     private val downloadSemaphore = Semaphore(4)
+    private val decodeSemaphore = Semaphore(4)
 
     init {
         purgeCoordinator?.registerListener {
             clearMemoryCache()
             clearDiskCache()
+        }
+    }
+
+    fun getFromMemoryCache(key: String): Bitmap? = memoryCache.get(key)
+
+    fun hasDiskCache(fileId: String): Boolean {
+        val diskFile = File(diskCacheDir, "$fileId.webp")
+        return diskFile.exists() && diskFile.length() > 0
+    }
+
+    fun cacheDecryptedThumbnail(fileId: String, plaintextBytes: ByteArray, targetPx: Int = 256): Bitmap? {
+        val diskFile = File(diskCacheDir, "$fileId.webp")
+        if (!diskFile.exists() || diskFile.length() == 0L) {
+            try {
+                diskFile.writeBytes(plaintextBytes)
+            } catch (_: Exception) {}
+        }
+        val bitmap = decodeHardwareBitmap(plaintextBytes, targetPx) ?: decodeHardwareBitmap(diskFile, targetPx)
+        if (bitmap != null) {
+            memoryCache.put(fileId, bitmap)
+        }
+        return bitmap
+    }
+
+    private fun configureHardwareDownsampleAndCenterCrop(
+        decoder: ImageDecoder,
+        info: ImageDecoder.ImageInfo,
+        targetPx: Int
+    ) {
+        decoder.allocator = ImageDecoder.ALLOCATOR_HARDWARE
+        val srcWidth = info.size.width
+        val srcHeight = info.size.height
+
+        if (srcWidth > targetPx && srcHeight > targetPx) {
+            val scale = targetPx.toFloat() / minOf(srcWidth, srcHeight)
+            val scaledW = (srcWidth * scale).toInt().coerceAtLeast(targetPx)
+            val scaledH = (srcHeight * scale).toInt().coerceAtLeast(targetPx)
+            decoder.setTargetSize(scaledW, scaledH)
+
+            val cropLeft = (scaledW - targetPx) / 2
+            val cropTop = (scaledH - targetPx) / 2
+            decoder.crop = Rect(
+                cropLeft,
+                cropTop,
+                cropLeft + targetPx,
+                cropTop + targetPx
+            )
+        }
+    }
+
+    internal fun decodeHardwareBitmap(file: File, targetPx: Int = 256): Bitmap? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val source = ImageDecoder.createSource(file)
+                return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    configureHardwareDownsampleAndCenterCrop(decoder, info, targetPx)
+                }
+            } catch (_: Throwable) {
+                // Fallback to BitmapFactory
+            }
+        }
+        return try {
+            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(file.absolutePath, boundsOptions)
+            var sampleSize = 1
+            if (boundsOptions.outWidth > targetPx && boundsOptions.outHeight > targetPx) {
+                val minOrig = minOf(boundsOptions.outWidth, boundsOptions.outHeight)
+                while (minOrig / (sampleSize * 2) >= targetPx) {
+                    sampleSize *= 2
+                }
+            }
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.HARDWARE
+                inSampleSize = sampleSize
+            }
+            BitmapFactory.decodeFile(file.absolutePath, options)
+                ?: BitmapFactory.decodeFile(file.absolutePath)
+        } catch (_: Exception) {
+            try {
+                BitmapFactory.decodeFile(file.absolutePath)
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    internal fun decodeHardwareBitmap(bytes: ByteArray, targetPx: Int = 256): Bitmap? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val buffer = ByteBuffer.wrap(bytes)
+                val source = ImageDecoder.createSource(buffer)
+                return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    configureHardwareDownsampleAndCenterCrop(decoder, info, targetPx)
+                }
+            } catch (_: Throwable) {
+                // Fallback to BitmapFactory
+            }
+        }
+        return try {
+            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOptions)
+            var sampleSize = 1
+            if (boundsOptions.outWidth > targetPx && boundsOptions.outHeight > targetPx) {
+                val minOrig = minOf(boundsOptions.outWidth, boundsOptions.outHeight)
+                while (minOrig / (sampleSize * 2) >= targetPx) {
+                    sampleSize *= 2
+                }
+            }
+            val options = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.HARDWARE
+                inSampleSize = sampleSize
+            }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                ?: BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (_: Exception) {
+            try {
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 
@@ -88,22 +219,29 @@ class EncryptedThumbnailLoader @Inject constructor(
         contentResolver: ContentResolver,
         uri: Uri,
         fileId: String? = null,
-        mimeType: String? = null
+        mimeType: String? = null,
+        targetPx: Int = 256
     ): Bitmap? {
         val cacheKey = fileId ?: uri.toString()
         memoryCache.get(cacheKey)?.let { return it }
 
         val isVideo = (mimeType ?: contentResolver.getType(uri))?.startsWith("video/", ignoreCase = true) == true
         val bitmap = if (isVideo) {
-            extractVideoThumbnail(contentResolver, uri, targetSize = 256)
+            extractVideoThumbnail(contentResolver, uri, targetSize = targetPx)
         } else {
             try {
-                val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = 256)
+                val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize = targetPx)
                 val options = BitmapFactory.Options().apply {
                     inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.HARDWARE
                 }
                 contentResolver.openInputStream(uri)?.use { stream ->
                     BitmapFactory.decodeStream(stream, null, options)
+                } ?: contentResolver.openInputStream(uri)?.use { stream ->
+                    val fallbackOptions = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
+                    }
+                    BitmapFactory.decodeStream(stream, null, fallbackOptions)
                 }
             } catch (_: Exception) {
                 null
@@ -136,9 +274,15 @@ class EncryptedThumbnailLoader @Inject constructor(
                 val sampleSize = calculateInSampleSize(contentResolver, uri, targetSize)
                 val options = BitmapFactory.Options().apply {
                     inSampleSize = sampleSize
+                    inPreferredConfig = Bitmap.Config.HARDWARE
                 }
                 contentResolver.openInputStream(uri)?.use { stream ->
                     BitmapFactory.decodeStream(stream, null, options)
+                } ?: contentResolver.openInputStream(uri)?.use { stream ->
+                    val fallbackOptions = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
+                    }
+                    BitmapFactory.decodeStream(stream, null, fallbackOptions)
                 }
             } catch (_: Exception) {
                 null
@@ -204,7 +348,8 @@ class EncryptedThumbnailLoader @Inject constructor(
      */
     suspend fun loadThumbnail(
         item: MediaWithCryptoDetails,
-        masterKey: MasterVaultKey?
+        masterKey: MasterVaultKey?,
+        targetPx: Int = 256
     ): Bitmap? = withContext(Dispatchers.IO) {
         val fileId = item.asset.fileId
 
@@ -214,14 +359,21 @@ class EncryptedThumbnailLoader @Inject constructor(
         // Tier 2: Check L2 Local Disk Cache
         val diskFile = File(diskCacheDir, "$fileId.webp")
         if (diskFile.exists() && diskFile.length() > 0) {
-            try {
-                val bitmap = BitmapFactory.decodeFile(diskFile.absolutePath)
-                if (bitmap != null) {
-                    memoryCache.put(fileId, bitmap)
-                    return@withContext bitmap
+            val diskBitmap = decodeSemaphore.withPermit {
+                memoryCache.get(fileId)?.let { return@withPermit it }
+                withContext(Dispatchers.Default) {
+                    try {
+                        decodeHardwareBitmap(diskFile, targetPx)?.also {
+                            memoryCache.put(fileId, it)
+                        }
+                    } catch (_: Exception) {
+                        diskFile.delete()
+                        null
+                    }
                 }
-            } catch (_: Exception) {
-                diskFile.delete()
+            }
+            if (diskBitmap != null) {
+                return@withContext diskBitmap
             }
         }
 
@@ -235,15 +387,19 @@ class EncryptedThumbnailLoader @Inject constructor(
 
         if (masterKey == null) return@withContext null
 
-        downloadSemaphore.withPermit {
-            // Re-check L2 cache within permit in case a concurrent fetch completed
+        val remoteResult = downloadSemaphore.withPermit {
+            // Re-check L1 and L2 within permit in case a concurrent fetch completed
+            memoryCache.get(fileId)?.let { return@withPermit it }
             if (diskFile.exists() && diskFile.length() > 0) {
                 try {
-                    val bitmap = BitmapFactory.decodeFile(diskFile.absolutePath)
-                    if (bitmap != null) {
-                        memoryCache.put(fileId, bitmap)
-                        return@withContext bitmap
+                    val bitmap = decodeSemaphore.withPermit {
+                        memoryCache.get(fileId) ?: withContext(Dispatchers.Default) {
+                            decodeHardwareBitmap(diskFile, targetPx)?.also {
+                                memoryCache.put(fileId, it)
+                            }
+                        }
                     }
+                    if (bitmap != null) return@withPermit bitmap
                 } catch (_: Exception) {
                     diskFile.delete()
                 }
@@ -257,17 +413,24 @@ class EncryptedThumbnailLoader @Inject constructor(
                     when (val result = assetClient.downloadAsset(thumbHash, tempFile)) {
                         is NetworkResult.Success -> {
                             try {
-                                val rawDek = AesGcmEnvelope.unwrapKey(wrappedDek, masterKey.keyBytes)
                                 val encryptedBytes = result.data.readBytes()
-                                val plaintextWebp = AesGcmEnvelope.decrypt(encryptedBytes, rawDek)
-                                diskFile.writeBytes(plaintextWebp)
-                                val bitmap = BitmapFactory.decodeByteArray(plaintextWebp, 0, plaintextWebp.size)
+                                val bitmap = withContext(Dispatchers.Default) {
+                                    val rawDek = AesGcmEnvelope.unwrapKey(wrappedDek, masterKey.keyBytes)
+                                    val plaintextWebp = AesGcmEnvelope.decrypt(encryptedBytes, rawDek)
+                                    withContext(Dispatchers.IO) {
+                                        diskFile.writeBytes(plaintextWebp)
+                                    }
+                                    decodeSemaphore.withPermit {
+                                        decodeHardwareBitmap(plaintextWebp, targetPx)
+                                            ?: decodeHardwareBitmap(diskFile, targetPx)
+                                    }
+                                }
                                 if (bitmap != null) {
                                     memoryCache.put(fileId, bitmap)
-                                    return@withContext bitmap
+                                    return@withPermit bitmap
                                 }
                             } catch (_: Exception) {
-                                return@withContext null
+                                return@withPermit null
                             }
                         }
                         is NetworkResult.Http.RateLimited -> {
@@ -275,15 +438,16 @@ class EncryptedThumbnailLoader @Inject constructor(
                             delay(waitMs)
                             continue
                         }
-                        else -> return@withContext null
+                        else -> return@withPermit null
                     }
                 } finally {
                     tempFile.delete()
                 }
             }
+            null
         }
 
-        null
+        remoteResult
     }
 
     /**
