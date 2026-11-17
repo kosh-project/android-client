@@ -133,7 +133,8 @@ class SessionManager @Inject constructor(
      * @param vaultKey The active 32-byte Master Vault Key.
      */
     fun saveVaultKey(vaultKey: MasterVaultKey) {
-        cachedVaultKey = vaultKey
+        require(!vaultKey.isClosed) { "Cannot save closed MasterVaultKey" }
+        cachedVaultKey = MasterVaultKey(vaultKey.keyBytes.clone())
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getSecretKey())
 

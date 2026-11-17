@@ -44,7 +44,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -124,17 +123,13 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import java.time.Instant
-import java.time.LocalDate
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import project.kosh.core.auth.PairingState
 import project.kosh.core.database.model.MediaWithCryptoDetails
 import project.kosh.core.model.ActivePairingSession
 import project.kosh.core.network.PingResult
 import project.kosh.feature.auth.QrCameraScannerDialog
 import project.kosh.feature.auth.QrCodeGenerator
+import project.kosh.feature.gallery.model.GalleryDateGroup
 import project.kosh.feature.gallery.ui.FloatingUploadBar
 import project.kosh.feature.gallery.ui.FolderSelectionBottomSheet
 import project.kosh.feature.gallery.ui.GalleryItemTile
@@ -149,12 +144,6 @@ import project.kosh.feature.gallery.ui.icons.MoreVertIcon
 import project.kosh.feature.gallery.ui.icons.NetworkPingIcon
 import project.kosh.feature.gallery.ui.icons.SettingsIcon
 import project.kosh.feature.gallery.ui.icons.SyncIcon
-
-private data class GalleryDateGroup(
-    val key: String,
-    val title: String,
-    val items: List<MediaWithCryptoDetails>
-)
 
 private val ItemPlacementSpec = spring<IntOffset>(
     dampingRatio = Spring.DampingRatioMediumBouncy,
@@ -175,9 +164,8 @@ fun GalleryScreen(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
-    val galleryItems by viewModel.galleryItems.collectAsState()
-    val activeUploadStages by viewModel.activeUploadStages.collectAsState()
-    val batchUploadState by viewModel.batchUploadState.collectAsState()
+    val groupedGalleryItems by viewModel.groupedGalleryItems.collectAsState()
+    val isBatchUploading by viewModel.isBatchUploading.collectAsState()
 
     val mediaFolders by viewModel.mediaFolders.collectAsState()
     val isScanningFolders by viewModel.isScanningFolders.collectAsState()
@@ -274,31 +262,6 @@ fun GalleryScreen(
     var targetScrollDelta by remember { mutableFloatStateOf(0f) }
     var scrollJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
-    val groupedGalleryItems = remember(galleryItems) {
-        val zoneId = ZoneId.systemDefault()
-        val today = LocalDate.now(zoneId)
-        val yesterday = today.minusDays(1)
-        val sameYearFormatter = DateTimeFormatter.ofPattern("d MMM", Locale.getDefault())
-        val diffYearFormatter = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.getDefault())
-
-        val map = linkedMapOf<LocalDate, MutableList<MediaWithCryptoDetails>>()
-        for (item in galleryItems) {
-            val ts = if (item.asset.capturedAt > 0) item.asset.capturedAt else item.asset.createdAt
-            val date = Instant.ofEpochMilli(ts).atZone(zoneId).toLocalDate()
-            map.getOrPut(date) { mutableListOf() }.add(item)
-        }
-
-        map.map { (date, items) ->
-            val title = when {
-                date.isEqual(today) -> "Today"
-                date.isEqual(yesterday) -> "Yesterday"
-                date.year == today.year -> sameYearFormatter.format(date)
-                else -> diffYearFormatter.format(date)
-            }
-            GalleryDateGroup(key = date.toString(), title = title, items = items)
-        }
-    }
-
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
@@ -347,40 +310,15 @@ fun GalleryScreen(
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         floatingActionButtonPosition = FabPosition.Center,
         floatingActionButton = {
-            Column(
-                horizontalAlignment = Alignment.End,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .navigationBarsPadding()
-            ) {
-                ExtendedFloatingActionButton(
-                    expanded = isFabExpanded,
-                    onClick = {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                        )
-                    },
-                    icon = {
-                        Icon(Icons.Default.Add, contentDescription = "Upload media")
-                    },
-                    text = { Text("Upload", fontWeight = FontWeight.SemiBold, fontSize = 15.sp) },
-                    shape = RoundedCornerShape(14.dp),
-                    elevation = FloatingActionButtonDefaults.elevation(
-                        defaultElevation = 6.dp,
-                        pressedElevation = 8.dp,
-                        focusedElevation = 6.dp,
-                        hoveredElevation = 7.dp
-                    ),
-                    modifier = Modifier.padding(bottom = if (batchUploadState.isUploading) 10.dp else 0.dp)
-                )
-
-                FloatingUploadBar(
-                    batchState = batchUploadState,
-                    onDismiss = { viewModel.dismissBatchBar() },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+            GalleryFloatingActionButtonSection(
+                viewModel = viewModel,
+                isFabExpanded = isFabExpanded,
+                onLaunchPicker = {
+                    photoPickerLauncher.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                    )
+                }
+            )
         }
     ) { innerPadding ->
         var showTopMenu by remember { mutableStateOf(false) }
@@ -557,7 +495,7 @@ fun GalleryScreen(
                         transformOrigin = TransformOrigin(0.5f, 0f)
                     }
             ) {
-            if (galleryItems.isEmpty() && !batchUploadState.isUploading) {
+            if (groupedGalleryItems.isEmpty() && !isBatchUploading) {
                 // Empty Vault State
                 Column(
                     modifier = Modifier
@@ -729,40 +667,9 @@ fun GalleryScreen(
                             key = { it.asset.fileId },
                             contentType = { if (it.asset.mediaType.startsWith("video/", ignoreCase = true)) "video" else "photo" }
                         ) { item ->
-                            val cachedBitmap = remember(item.asset.fileId) { viewModel.getFromMemoryCache(item) }
-                            var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf(cachedBitmap) }
-                            var isSyncingRemote by remember(item.asset.fileId) { mutableStateOf(false) }
-
-                            if (thumbnailBitmap == null) {
-                                LaunchedEffect(item.asset.fileId) {
-                                    // 32ms coroutine debounce: if user is flinging fast, item scrolls off-screen before 32ms,
-                                    // cancelling this coroutine naturally without touching disk or crypto
-                                    delay(32L)
-                                    val needsRemoteDownload = !viewModel.hasDiskCache(item.asset.fileId) &&
-                                        !viewModel.isInFlight(item.asset.fileId) &&
-                                        (item.cryptoMapping?.thumbnailCiphertextHash != null || item.asset.thumbnailHash != null)
-
-                                    if (needsRemoteDownload) {
-                                        isSyncingRemote = true
-                                    }
-                                    try {
-                                        thumbnailBitmap = viewModel.loadThumbnail(item)
-                                    } finally {
-                                        isSyncingRemote = false
-                                    }
-                                }
-                            }
-
-                            val uploadStage = activeUploadStages[item.asset.fileId]
-
-                            GalleryItemTile(
+                            GalleryGridItem(
                                 item = item,
-                                thumbnail = thumbnailBitmap,
-                                isSyncingRemote = isSyncingRemote,
-                                uploadStage = uploadStage,
-                                onClick = {
-                                    // Fullscreen viewer deferred to next iteration
-                                },
+                                viewModel = viewModel,
                                 modifier = Modifier.animateItem(
                                     placementSpec = ItemPlacementSpec
                                 )
@@ -1409,3 +1316,89 @@ fun GalleryScreen(
         )
     }
 }
+
+@Composable
+private fun GalleryFloatingActionButtonSection(
+    viewModel: GalleryViewModel,
+    isFabExpanded: Boolean,
+    onLaunchPicker: () -> Unit
+) {
+    val batchUploadState by viewModel.batchUploadState.collectAsState()
+    Column(
+        horizontalAlignment = Alignment.End,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .navigationBarsPadding()
+    ) {
+        ExtendedFloatingActionButton(
+            expanded = isFabExpanded,
+            onClick = onLaunchPicker,
+            icon = {
+                Icon(Icons.Default.Add, contentDescription = "Upload media")
+            },
+            text = { Text("Upload", fontWeight = FontWeight.SemiBold, fontSize = 15.sp) },
+            shape = RoundedCornerShape(14.dp),
+            elevation = FloatingActionButtonDefaults.elevation(
+                defaultElevation = 6.dp,
+                pressedElevation = 8.dp,
+                focusedElevation = 6.dp,
+                hoveredElevation = 7.dp
+            ),
+            modifier = Modifier.padding(bottom = if (batchUploadState.isUploading) 10.dp else 0.dp)
+        )
+
+        FloatingUploadBar(
+            batchState = batchUploadState,
+            onDismiss = { viewModel.dismissBatchBar() },
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
+private fun GalleryGridItem(
+    item: MediaWithCryptoDetails,
+    viewModel: GalleryViewModel,
+    modifier: Modifier = Modifier
+) {
+    val cachedBitmap = remember(item.asset.fileId) { viewModel.getFromMemoryCache(item) }
+    var thumbnailBitmap by remember(item.asset.fileId) { mutableStateOf(cachedBitmap) }
+    var isSyncingRemote by remember(item.asset.fileId) { mutableStateOf(false) }
+
+    if (thumbnailBitmap == null) {
+        LaunchedEffect(item.asset.fileId) {
+            // 32ms coroutine debounce: if user is flinging fast, item scrolls off-screen before 32ms,
+            // cancelling this coroutine naturally without touching disk or crypto
+            delay(32L)
+            val needsRemoteDownload = !viewModel.hasDiskCache(item.asset.fileId) &&
+                !viewModel.isInFlight(item.asset.fileId) &&
+                (item.cryptoMapping?.thumbnailCiphertextHash != null || item.asset.thumbnailHash != null)
+
+            if (needsRemoteDownload) {
+                isSyncingRemote = true
+            }
+            try {
+                thumbnailBitmap = viewModel.loadThumbnail(item)
+            } finally {
+                isSyncingRemote = false
+            }
+        }
+    }
+
+    val uploadStage by remember(item.asset.fileId) {
+        viewModel.getUploadStage(item.asset.fileId)
+    }.collectAsState(initial = null)
+
+    GalleryItemTile(
+        item = item,
+        thumbnail = thumbnailBitmap,
+        isSyncingRemote = isSyncingRemote,
+        uploadStage = uploadStage,
+        onClick = {
+            // Fullscreen viewer deferred to next iteration
+        },
+        modifier = modifier
+    )
+}
+

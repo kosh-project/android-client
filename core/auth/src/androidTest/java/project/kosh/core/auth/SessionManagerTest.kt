@@ -8,6 +8,7 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import project.kosh.core.crypto.MasterVaultKey
 
 
 @RunWith(AndroidJUnit4::class)
@@ -51,5 +52,34 @@ class SessionManagerTest {
         assertNotNull("Encrypted string should exist on disk", rawEncryptedString)
 
         assertFalse("CRITICAL_SECURITY_FAILURE: Token exists in plaintext format", rawEncryptedString!!.contains(originalToken))
+    }
+
+    @Test
+    fun testVaultKeyCloningProtectsCachedKeyAgainstExternalClose() {
+        val originalKeyBytes = ByteArray(32) { (it + 1).toByte() }
+        val originalKey = MasterVaultKey(originalKeyBytes)
+
+        sessionManager.saveVaultKey(originalKey)
+
+        // Close external key reference
+        originalKey.close()
+        assertTrue("Original key should be marked closed", originalKey.isClosed)
+
+        // Cached key in SessionManager must remain valid and unclosed
+        val retrievedKey = sessionManager.getVaultKey()
+        assertNotNull("Retrieved key must not be null", retrievedKey)
+        assertFalse("Retrieved key must not be closed", retrievedKey!!.isClosed)
+        assertArrayEquals(
+            "Retrieved key bytes must match original unzeroed bytes",
+            ByteArray(32) { (it + 1).toByte() },
+            retrievedKey.keyBytes
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testSaveVaultKeyRejectsClosedKey() {
+        val closedKey = MasterVaultKey(ByteArray(32) { 42.toByte() })
+        closedKey.close()
+        sessionManager.saveVaultKey(closedKey)
     }
 }

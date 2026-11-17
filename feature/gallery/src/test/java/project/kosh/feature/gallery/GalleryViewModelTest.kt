@@ -111,6 +111,7 @@ class GalleryViewModelTest {
             snapshotScheduler = mockSnapshotScheduler
         ).apply {
             ioDispatcher = testDispatcher
+            defaultDispatcher = testDispatcher
         }
     }
 
@@ -1217,6 +1218,177 @@ class GalleryViewModelTest {
         every { contentResolver.getType(uri) } returns "image/png"
 
         assertFalse(viewModel.isInFlight("non-existent-id"))
+    }
+
+    @Test
+    fun `groupedGalleryItems groups items into date buckets on background dispatcher`() = runTest {
+        val now = System.currentTimeMillis()
+        val itemToday = MediaWithCryptoDetails(
+            asset = project.kosh.core.database.entity.MediaAssetEntity(
+                fileId = "today-item",
+                mediaType = "image/jpeg",
+                fileSize = 100L,
+                capturedAt = now
+            ),
+            cryptoMapping = null
+        )
+        val itemYesterday = MediaWithCryptoDetails(
+            asset = project.kosh.core.database.entity.MediaAssetEntity(
+                fileId = "yesterday-item",
+                mediaType = "image/jpeg",
+                fileSize = 200L,
+                capturedAt = now - 86_400_000L
+            ),
+            cryptoMapping = null
+        )
+
+        every { mockMediaRepository.observeAllMediaWithCrypto() } returns flowOf(listOf(itemToday, itemYesterday))
+        val vm = createViewModel()
+
+        val collectJob = launch(UnconfinedTestDispatcher(testScheduler)) {
+            vm.groupedGalleryItems.collect()
+        }
+        testScheduler.advanceUntilIdle()
+
+        val groups = vm.groupedGalleryItems.value
+        assertEquals(2, groups.size)
+        assertEquals("Today", groups[0].title)
+        assertEquals("Yesterday", groups[1].title)
+        assertEquals("today-item", groups[0].items[0].asset.fileId)
+        assertEquals("yesterday-item", groups[1].items[0].asset.fileId)
+
+        collectJob.cancel()
+    }
+
+    @Test
+    fun `getUploadStage emits stage transitions for specific fileId without cross-item interference`() = runTest {
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val mockUri1: Uri = mockk(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+
+        val stagesForFile2 = mutableListOf<UploadStage?>()
+
+        val stageJob2 = launch(UnconfinedTestDispatcher(testScheduler)) {
+            viewModel.getUploadStage("file-2").collect { stagesForFile2.add(it) }
+        }
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(
+                contentResolver = any(),
+                uri = any(),
+                masterVaultKey = any(),
+                mediaType = any(),
+                originalFileName = any(),
+                customFileId = any(),
+                customCapturedAt = any(),
+                onProgress = any()
+            )
+        } answers {
+            val progressCallback = arg<((project.kosh.core.model.UploadStage) -> Unit)?>(7)
+            progressCallback?.invoke(UploadStage.Hashing(0.5f))
+            UploadResult.Success(mockk(relaxed = true), false)
+        }
+
+        viewModel.enqueueUploads(mockResolver, listOf(mockUri1))
+        testScheduler.advanceUntilIdle()
+
+        // File-2 should have observed only initial null and no changes
+        assertEquals(listOf<UploadStage?>(null), stagesForFile2)
+
+        stageJob2.cancel()
+    }
+
+    @Test
+    fun `enqueueUploads does not eagerly decode thumbnails`() = runTest {
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val mockUri: Uri = mockk(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any())
+        } coAnswers {
+            kotlinx.coroutines.delay(1000L)
+            UploadResult.Success(mockk(relaxed = true), false)
+        }
+
+        viewModel.enqueueUploads(mockResolver, listOf(mockUri))
+        testScheduler.runCurrent()
+
+        coVerify(exactly = 0) { mockThumbnailLoader.loadLocalThumbnail(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `saveFolderSelection sets totalBatchBytes and completedBatchBytes accurately in batchUploadState`() = runTest {
+        val vm = createViewModel()
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val testUri = mockk<Uri>(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(any(), any(), any(), any(), any(), any(), any(), any())
+        } coAnswers {
+            kotlinx.coroutines.delay(10000L)
+            UploadResult.Success(mockk(relaxed = true), false)
+        }
+
+        coEvery {
+            mockMediaFolderScanner.queryMediaInFolder("camera-bucket")
+        } returns listOf(
+            DiscoveredMediaItem(
+                id = 101L,
+                uri = testUri,
+                displayName = "photo.jpg",
+                mimeType = "image/jpeg",
+                size = 5000L,
+                dateModified = 1000L,
+                bucketId = "camera-bucket"
+            )
+        )
+
+        vm.saveFolderSelection(setOf("camera-bucket"), mockResolver)
+        testScheduler.runCurrent()
+
+        assertEquals(1, vm.batchUploadState.value.totalItems)
+        assertEquals(5000L, vm.batchUploadState.value.totalBatchBytes)
+        assertTrue(vm.batchUploadState.value.isUploading)
+    }
+
+    @Test
+    fun `enqueueUploads during batch completion delay does not reset batch counters to zero`() = runTest {
+        val mockResolver: ContentResolver = mockk(relaxed = true)
+        val mockUri1: Uri = mockk(relaxed = true)
+        val mockUri2: Uri = mockk(relaxed = true)
+        val mockVaultKey: MasterVaultKey = mockk(relaxed = true)
+        every { mockAuthRepository.getVaultKey() } returns mockVaultKey
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(any(), eq(mockUri1), any(), any(), any(), any(), any(), any())
+        } returns UploadResult.Success(mockk(relaxed = true), false)
+
+        coEvery {
+            mockMediaUploadPipeline.uploadFromUri(any(), eq(mockUri2), any(), any(), any(), any(), any(), any())
+        } coAnswers {
+            kotlinx.coroutines.delay(5000L)
+            UploadResult.Success(mockk(relaxed = true), false)
+        }
+
+        viewModel.enqueueUploads(mockResolver, listOf(mockUri1))
+        // Run until mockUri1 finishes upload and enters 800ms exit delay
+        testScheduler.advanceTimeBy(50L)
+
+        // Enqueue mockUri2 while 800ms delay is pending
+        viewModel.enqueueUploads(mockResolver, listOf(mockUri2))
+        testScheduler.runCurrent()
+
+        // Advance past 800ms delay
+        testScheduler.advanceTimeBy(1000L)
+
+        // Total items must remain 2 (not reset to 0), and isUploading must remain true
+        assertEquals(2, viewModel.batchUploadState.value.totalItems)
+        assertTrue(viewModel.batchUploadState.value.isUploading)
     }
 
     @After

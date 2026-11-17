@@ -107,6 +107,14 @@ object AesGcmEnvelope {
     }
 
     /**
+     * Initializes and returns a [HardwareStreamingAesGcmCipher] configured for streaming encryption
+     * with the specified 32-byte [key] and 12-byte [iv], bypassing Conscrypt's non-streaming heap buffer.
+     */
+    fun createStreamingEncryptCipher(key: ByteArray, iv: ByteArray): HardwareStreamingAesGcmCipher {
+        return HardwareStreamingAesGcmCipher(key, iv)
+    }
+
+    /**
      * Streams encryption of [inputStream] into [outputStream] via AES-256-GCM.
      * Wire format: [12-byte IV][ciphertext + 16-byte GCM tag]
      *
@@ -126,24 +134,26 @@ object AesGcmEnvelope {
         outputStream.write(iv)
         outputStream.flush()
 
-        val cipher = createEncryptCipher(key, iv)
+        val cipher = createStreamingEncryptCipher(key, iv)
 
         val buffer = ByteArray(bufferSize)
         var bytesRead: Int
         var totalRead = 0L
 
         while (inputStream.read(buffer).also { bytesRead = it } != -1) {
-            val updateBytes = cipher.update(buffer, 0, bytesRead)
-            if (updateBytes != null && updateBytes.isNotEmpty()) {
-                outputStream.write(updateBytes)
-                outputStream.flush()
+            if (bytesRead > 0) {
+                val updateBytes = cipher.update(buffer, 0, bytesRead)
+                if (updateBytes.isNotEmpty()) {
+                    outputStream.write(updateBytes)
+                    outputStream.flush()
+                }
+                totalRead += bytesRead
+                onProgress?.invoke(totalRead)
             }
-            totalRead += bytesRead
-            onProgress?.invoke(totalRead)
         }
 
         val finalBytes = cipher.doFinal()
-        if (finalBytes != null && finalBytes.isNotEmpty()) {
+        if (finalBytes.isNotEmpty()) {
             outputStream.write(finalBytes)
         }
         outputStream.flush()

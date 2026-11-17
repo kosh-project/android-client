@@ -225,7 +225,7 @@ class EncryptedThumbnailLoaderTest {
     }
 
     @Test
-    fun loadLocalThumbnail_returnsBitmapAndPopulatesMemoryCache() {
+    fun loadLocalThumbnail_returnsBitmapAndPopulatesMemoryCache() = runTest {
         val testBitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
         val stream = ByteArrayOutputStream()
         testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
@@ -242,7 +242,7 @@ class EncryptedThumbnailLoaderTest {
     }
 
     @Test
-    fun loadLocalThumbnail_subSamplesLargeBitmaps() {
+    fun loadLocalThumbnail_subSamplesLargeBitmaps() = runTest {
         // Create 1024x1024 bitmap
         val largeBitmap = Bitmap.createBitmap(1024, 1024, Bitmap.Config.ARGB_8888)
         val stream = ByteArrayOutputStream()
@@ -284,7 +284,7 @@ class EncryptedThumbnailLoaderTest {
     }
 
     @Test
-    fun loadLocalThumbnail_videoMimeType_checksMemoryCacheFirst() {
+    fun loadLocalThumbnail_videoMimeType_checksMemoryCacheFirst() = runTest {
         val fileId = "video-file-1"
         val cachedFrame = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888)
         loader.memoryCache.put(fileId, cachedFrame)
@@ -302,7 +302,7 @@ class EncryptedThumbnailLoaderTest {
     }
 
     @Test
-    fun loadLocalThumbnail_videoMimeType_handlesMissingGracefully() {
+    fun loadLocalThumbnail_videoMimeType_handlesMissingGracefully() = runTest {
         val uri = android.net.Uri.parse("content://media/external/video/media/invalid_id")
         val result = loader.loadLocalThumbnail(
             contentResolver = context.contentResolver,
@@ -331,7 +331,7 @@ class EncryptedThumbnailLoaderTest {
     }
 
     @Test
-    fun loadLocalThumbnail_nullFileId_cachesByUriString() {
+    fun loadLocalThumbnail_nullFileId_cachesByUriString() = runTest {
         val uri = android.net.Uri.parse("content://media/external/video/media/null_file_id_vid")
         val cachedFrame = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
         loader.memoryCache.put(uri.toString(), cachedFrame)
@@ -483,6 +483,51 @@ class EncryptedThumbnailLoaderTest {
         val result = loader.loadThumbnail(item, masterKey = null, targetPx = 16)
         assertNotNull(result)
         assertEquals(result, loader.getFromMemoryCache(fileId))
+    }
+
+    @Test
+    fun loadThumbnail_recoversWhenDiskCacheDirectoryWasDeleted() = runTest {
+        // Delete the root kosh_thumbnails directory completely from disk
+        loader.diskCacheDir.deleteRecursively()
+        assertFalse(loader.diskCacheDir.exists())
+
+        val fileId = "test-deleted-dir"
+        val testBitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val stream = ByteArrayOutputStream()
+        testBitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        val plainBytes = stream.toByteArray()
+
+        val dek = ByteArray(32) { (it + 5).toByte() }
+        val masterKey = MasterVaultKey(ByteArray(32) { (it + 20).toByte() })
+        val encryptedBytes = AesGcmEnvelope.encrypt(plainBytes, dek)
+        val wrappedDekHex = AesGcmEnvelope.wrapKey(dek, masterKey.keyBytes)
+        val thumbHash = "blake3-cas-deleted-dir-hash"
+
+        coEvery { mockAssetClient.downloadAsset(thumbHash, any()) } answers {
+            val destFile = secondArg<File>()
+            destFile.writeBytes(encryptedBytes)
+            NetworkResult.Success(destFile)
+        }
+
+        val item = MediaWithCryptoDetails(
+            asset = MediaAssetEntity(
+                fileId = fileId,
+                mediaType = "image/jpeg",
+                fileSize = plainBytes.size.toLong(),
+                capturedAt = 1000L
+            ),
+            cryptoMapping = MediaCryptoMappingEntity(
+                fileId = fileId,
+                plaintextSha256 = "dummy-sha256",
+                thumbnailCiphertextHash = thumbHash,
+                wrappedDek = wrappedDekHex,
+                wrappedThumbnailDek = wrappedDekHex
+            )
+        )
+
+        val result = loader.loadThumbnail(item, masterKey)
+        assertNotNull(result)
+        assertTrue(loader.diskCacheDir.exists())
     }
 }
 
