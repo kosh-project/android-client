@@ -6,7 +6,7 @@ import org.junit.Test
 
 /**
  * Unit tests verifying pull-to-refresh overstretch mechanics, spring dynamics,
- * and Material 3 loading indicator clearance above the gallery layout.
+ * continuous wave amplitude scaling, and indicator clearance above the gallery layout.
  */
 class GalleryPullToRefreshTest {
 
@@ -17,16 +17,11 @@ class GalleryPullToRefreshTest {
         private const val SCALE_FACTOR = 0.06f
     }
 
-    private fun calculateIndicatorBottom(distanceFraction: Float): Float {
-        // In Material 3 IndicatorBox: translationY = distanceFraction * maxDistance - size.height.
-        // The container height is 40dp, so bottom edge is translationY + 40dp = distanceFraction * maxDistance.
-        return distanceFraction.coerceAtLeast(0f) * INDICATOR_MAX_DISTANCE_DP
-    }
+    private fun calculateIndicatorBottom(distanceFraction: Float): Float =
+        distanceFraction.coerceAtLeast(0f) * INDICATOR_MAX_DISTANCE_DP
 
-    private fun calculateContentTranslationY(distanceFraction: Float): Float {
-        val clampedProgress = distanceFraction.coerceIn(0f, MAX_OVERSTRETCH_CEILING)
-        return clampedProgress * CONTENT_OVERSTRETCH_MAX_DP
-    }
+    private fun calculateContentTranslationY(distanceFraction: Float): Float =
+        distanceFraction.coerceIn(0f, MAX_OVERSTRETCH_CEILING) * CONTENT_OVERSTRETCH_MAX_DP
 
     private fun calculateOverstretchScaleY(
         distanceFraction: Float,
@@ -38,104 +33,91 @@ class GalleryPullToRefreshTest {
         return 1f + (clampedProgress * SCALE_FACTOR * relaxation)
     }
 
-    private fun isIndeterminateIndicatorActive(
-        isRefreshing: Boolean,
-        isDismissingAfterRefresh: Boolean
-    ): Boolean {
-        return isRefreshing || isDismissingAfterRefresh
-    }
+    private fun isIndeterminateIndicatorActive(isRefreshing: Boolean, isDismissing: Boolean): Boolean =
+        isRefreshing || isDismissing
 
-    @Test
-    fun idleState_hasZeroDisplacementAndUnitScale() {
-        val distanceFraction = 0f
-        val indicatorBottom = calculateIndicatorBottom(distanceFraction)
-        val contentY = calculateContentTranslationY(distanceFraction)
-        val scaleY = calculateOverstretchScaleY(distanceFraction, isSyncing = false)
-
-        assertEquals(0f, indicatorBottom, 0.001f)
-        assertEquals(0f, contentY, 0.001f)
-        assertEquals(1f, scaleY, 0.001f)
-    }
-
-    @Test
-    fun duringPull_contentTranslationAlwaysExceedsIndicatorBottom() {
-        // At all pull fractions > 0, the content layout must sit strictly below the indicator bottom,
-        // ensuring the M3 loading indicator floats above the layout without occluding grid tiles.
-        val pullSteps = listOf(0.1f, 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f)
-        for (fraction in pullSteps) {
-            val indicatorBottom = calculateIndicatorBottom(fraction)
-            val contentY = calculateContentTranslationY(fraction)
-
-            assertTrue(
-                "Content top ($contentY dp) must be strictly greater than indicator bottom ($indicatorBottom dp) at fraction $fraction",
-                contentY > indicatorBottom
-            )
-        }
-    }
-
-    @Test
-    fun refreshingRestingState_providesCleanMarginAboveLayout() {
-        // At threshold (distanceFraction = 1.0), indicator bottom is at 80dp.
-        // Content rests at 96dp, providing exactly 16dp of breathing space above the grid.
-        val distanceFraction = 1.0f
-        val indicatorBottom = calculateIndicatorBottom(distanceFraction)
-        val contentY = calculateContentTranslationY(distanceFraction)
-        val clearance = contentY - indicatorBottom
-
-        assertEquals(80f, indicatorBottom, 0.001f)
-        assertEquals(96f, contentY, 0.001f)
-        assertEquals(16f, clearance, 0.001f)
-    }
-
-    @Test
-    fun pullOvershoot_isClampedAtCeiling() {
-        // Gestures beyond 1.5 ceiling (e.g. 2.0 or 3.0) clamp to prevent excessive downward translation
-        val extremeFraction = 2.5f
-        val contentY = calculateContentTranslationY(extremeFraction)
-        val expectedClampedY = 1.5f * CONTENT_OVERSTRETCH_MAX_DP
-
-        assertEquals(expectedClampedY, contentY, 0.001f)
-        assertEquals(144f, contentY, 0.001f)
-    }
-
-    @Test
-    fun elasticScale_stretchesDuringPullAndRelaxesWhenSyncingOrDismissing() {
-        // Pulling to threshold stretches vertically to 1.06x
-        val pullScale = calculateOverstretchScaleY(1.0f, isSyncing = false)
-        assertEquals(1.06f, pullScale, 0.001f)
-
-        // Overshoot to 1.5 ceiling stretches to 1.09x
-        val maxPullScale = calculateOverstretchScaleY(1.5f, isSyncing = false)
-        assertEquals(1.09f, maxPullScale, 0.001f)
-
-        // Once sync is triggered, scale relaxes back to 1.0x while translation offset holds
-        val syncingScale = calculateOverstretchScaleY(1.0f, isSyncing = true)
-        assertEquals(1.0f, syncingScale, 0.001f)
-
-        // During post-refresh dismissal collapse, scale also holds at 1.0x (no stretch bounce)
-        val dismissingScale = calculateOverstretchScaleY(0.8f, isSyncing = false, isDismissingAfterRefresh = true)
-        assertEquals(1.0f, dismissingScale, 0.001f)
-    }
-
-    private fun calculateIndicatorStrokeProgress(distanceFraction: Float): Float {
-        val clampedProgress = distanceFraction.coerceIn(0f, MAX_OVERSTRETCH_CEILING)
-        return (clampedProgress / 1.0f).coerceIn(0f, 1f)
-    }
+    private fun calculateIndicatorStrokeProgress(distanceFraction: Float): Float =
+        (distanceFraction.coerceIn(0f, MAX_OVERSTRETCH_CEILING) / 1.0f).coerceIn(0f, 1f)
 
     private fun calculateIndicatorAlpha(
         distanceFraction: Float,
         isRefreshing: Boolean,
-        isDismissingAfterRefresh: Boolean = false,
+        isDismissing: Boolean = false,
         isAnimating: Boolean = false
     ): Float {
         val clampedProgress = distanceFraction.coerceIn(0f, MAX_OVERSTRETCH_CEILING)
         return when {
             isRefreshing -> 1f
-            isDismissingAfterRefresh -> 0f
-            isAnimating -> 0f
+            isDismissing || isAnimating -> 0f
             clampedProgress > 0.05f -> (clampedProgress * 2.5f).coerceIn(0f, 1f)
             else -> 0f
         }
+    }
+
+    private fun calculateWaveAmplitude(
+        pullFraction: Float,
+        isRefreshing: Boolean,
+        isDismissing: Boolean
+    ): Float = when {
+        isDismissing -> 0f
+        isRefreshing -> 1f
+        pullFraction > 0.01f -> pullFraction.coerceIn(0f, MAX_OVERSTRETCH_CEILING)
+        else -> 0f
+    }
+
+    private fun calculateWaveBarHeightDp(
+        pullFraction: Float,
+        isRefreshing: Boolean,
+        isDismissing: Boolean
+    ): Float = when {
+        isDismissing -> 0f
+        isRefreshing -> 16f
+        pullFraction > 0.01f -> 4f + (12f * pullFraction.coerceIn(0f, MAX_OVERSTRETCH_CEILING))
+        else -> 0f
+    }
+
+    private fun calculateWavyBarTopClearanceDp(isTopBarVisible: Boolean): Float =
+        if (isTopBarVisible) 52f else 4f
+
+    @Test
+    fun idleState_hasZeroDisplacementAndUnitScale() {
+        assertEquals(0f, calculateIndicatorBottom(0f), 0.001f)
+        assertEquals(0f, calculateContentTranslationY(0f), 0.001f)
+        assertEquals(1f, calculateOverstretchScaleY(0f, isSyncing = false), 0.001f)
+    }
+
+    @Test
+    fun duringPull_contentTranslationAlwaysExceedsIndicatorBottom() {
+        val pullSteps = listOf(0.1f, 0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f)
+        for (fraction in pullSteps) {
+            val indicatorBottom = calculateIndicatorBottom(fraction)
+            val contentY = calculateContentTranslationY(fraction)
+            assertTrue("Content top ($contentY dp) must exceed indicator bottom ($indicatorBottom dp)", contentY > indicatorBottom)
+        }
+    }
+
+    @Test
+    fun refreshingRestingState_providesCleanMarginAboveLayout() {
+        val indicatorBottom = calculateIndicatorBottom(1.0f)
+        val contentY = calculateContentTranslationY(1.0f)
+        assertEquals(80f, indicatorBottom, 0.001f)
+        assertEquals(96f, contentY, 0.001f)
+        assertEquals(16f, contentY - indicatorBottom, 0.001f)
+    }
+
+    @Test
+    fun pullOvershoot_isClampedAtCeiling() {
+        val contentY = calculateContentTranslationY(2.5f)
+        assertEquals(1.5f * CONTENT_OVERSTRETCH_MAX_DP, contentY, 0.001f)
+        assertEquals(144f, contentY, 0.001f)
+    }
+
+    @Test
+    fun elasticScale_stretchesDuringPullAndRelaxesWhenSyncingOrDismissing() {
+        assertEquals(1.06f, calculateOverstretchScaleY(1.0f, isSyncing = false), 0.001f)
+        assertEquals(1.09f, calculateOverstretchScaleY(1.5f, isSyncing = false), 0.001f)
+        assertEquals(1.0f, calculateOverstretchScaleY(1.0f, isSyncing = true), 0.001f)
+        assertEquals(1.0f, calculateOverstretchScaleY(0.8f, isSyncing = false, isDismissingAfterRefresh = true), 0.001f)
     }
 
     @Test
@@ -150,122 +132,74 @@ class GalleryPullToRefreshTest {
 
     @Test
     fun indicatorAlpha_fadesInDuringPull_holdsDuringRefresh_fadesOutOnCollapse() {
-        // Resting: fully transparent
         assertEquals(0f, calculateIndicatorAlpha(0f, isRefreshing = false), 0.001f)
-
-        // Pull down 0.2: smoothly faded in (0.2 * 2.5 = 0.5)
         assertEquals(0.5f, calculateIndicatorAlpha(0.2f, isRefreshing = false), 0.001f)
-
-        // Threshold reached (1.0): fully visible
         assertEquals(1.0f, calculateIndicatorAlpha(1.0f, isRefreshing = false), 0.001f)
-
-        // In refresh mode: held at 1.0
         assertEquals(1.0f, calculateIndicatorAlpha(1.0f, isRefreshing = true), 0.001f)
-
-        // Exactly when refresh ends at 1.0f: immediately targets 0.0f fade out
-        assertEquals(0f, calculateIndicatorAlpha(1.0f, isRefreshing = false, isDismissingAfterRefresh = true, isAnimating = true), 0.001f)
-
-        // Mid-collapse at 0.5f: still targets 0.0f
-        assertEquals(0f, calculateIndicatorAlpha(0.5f, isRefreshing = false, isDismissingAfterRefresh = true, isAnimating = true), 0.001f)
-
-        // User releases before threshold without refreshing (cancelled pull): immediately fades out
-        assertEquals(0f, calculateIndicatorAlpha(0.5f, isRefreshing = false, isDismissingAfterRefresh = false, isAnimating = true), 0.001f)
+        assertEquals(0f, calculateIndicatorAlpha(1.0f, isRefreshing = false, isDismissing = true, isAnimating = true), 0.001f)
+        assertEquals(0f, calculateIndicatorAlpha(0.5f, isRefreshing = false, isDismissing = true, isAnimating = true), 0.001f)
+        assertEquals(0f, calculateIndicatorAlpha(0.5f, isRefreshing = false, isDismissing = false, isAnimating = true), 0.001f)
     }
 
     @Test
     fun indeterminateMode_remainsActiveThroughoutRefreshAndCollapseToPreventDeterminateReversion() {
-        // Pulling down: not indeterminate mode (uses determinate arc)
-        assertTrue(!isIndeterminateIndicatorActive(isRefreshing = false, isDismissingAfterRefresh = false))
-
-        // Active refresh: indeterminate spinner active
-        assertTrue(isIndeterminateIndicatorActive(isRefreshing = true, isDismissingAfterRefresh = false))
-
-        // Post-refresh collapse: indeterminate spinner remains active while fading out
-        assertTrue(isIndeterminateIndicatorActive(isRefreshing = false, isDismissingAfterRefresh = true))
-    }
-
-    private fun calculateWaveAmplitude(
-        pullFraction: Float,
-        isRefreshing: Boolean,
-        isDismissing: Boolean
-    ): Float {
-        return when {
-            isDismissing -> 0f
-            isRefreshing -> 1f
-            pullFraction > 0.01f -> pullFraction.coerceIn(0f, 1f)
-            else -> 0f
-        }
-    }
-
-    private fun calculateWaveBarHeightDp(
-        pullFraction: Float,
-        isRefreshing: Boolean,
-        isDismissing: Boolean
-    ): Float {
-        return when {
-            isDismissing -> 0f
-            isRefreshing -> 16f
-            pullFraction > 0.01f -> 4f + (12f * pullFraction.coerceIn(0f, 1f))
-            else -> 0f
-        }
-    }
-
-    private fun calculateWavyBarTopClearanceDp(isTopBarVisible: Boolean): Float {
-        return if (isTopBarVisible) 52f else 4f
+        assertTrue(!isIndeterminateIndicatorActive(isRefreshing = false, isDismissing = false))
+        assertTrue(isIndeterminateIndicatorActive(isRefreshing = true, isDismissing = false))
+        assertTrue(isIndeterminateIndicatorActive(isRefreshing = false, isDismissing = true))
     }
 
     @Test
     fun waveAmplitude_scalesLinearlyFromFlatToMaxDuringPull() {
-        // Idle: amplitude is 0 (flat line)
         assertEquals(0f, calculateWaveAmplitude(0f, isRefreshing = false, isDismissing = false), 0.001f)
-
-        // Pulling down: amplitude scales linearly with finger stretch
         assertEquals(0.25f, calculateWaveAmplitude(0.25f, isRefreshing = false, isDismissing = false), 0.001f)
         assertEquals(0.5f, calculateWaveAmplitude(0.5f, isRefreshing = false, isDismissing = false), 0.001f)
         assertEquals(0.75f, calculateWaveAmplitude(0.75f, isRefreshing = false, isDismissing = false), 0.001f)
         assertEquals(1.0f, calculateWaveAmplitude(1.0f, isRefreshing = false, isDismissing = false), 0.001f)
-
-        // Overshoot is clamped to 1.0f
-        assertEquals(1.0f, calculateWaveAmplitude(1.5f, isRefreshing = false, isDismissing = false), 0.001f)
+        // Overshoot scales amplitude proportionally beyond 1.0f up to MAX_OVERSTRETCH_CEILING (1.5f)
+        assertEquals(1.25f, calculateWaveAmplitude(1.25f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(1.5f, calculateWaveAmplitude(1.5f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(1.5f, calculateWaveAmplitude(2.5f, isRefreshing = false, isDismissing = false), 0.001f)
     }
 
     @Test
     fun waveAmplitude_holdsAtMaxDuringRefresh_flattensOnDismissal() {
-        // Active refresh: amplitude held at 1.0f
         assertEquals(1.0f, calculateWaveAmplitude(0f, isRefreshing = true, isDismissing = false), 0.001f)
-
-        // Dismissal: amplitude immediately targets 0.0f to flatten into straight line
         assertEquals(0f, calculateWaveAmplitude(1.0f, isRefreshing = true, isDismissing = true), 0.001f)
     }
 
     @Test
     fun barHeight_bloomsProportionallyWithPull_andShrinksToZeroOnDismissal() {
-        // Idle: 0dp
         assertEquals(0f, calculateWaveBarHeightDp(0f, isRefreshing = false, isDismissing = false), 0.001f)
-
-        // Pulling down: blooms from 4dp to 16dp
         assertEquals(4f, calculateWaveBarHeightDp(0.015f, isRefreshing = false, isDismissing = false), 0.2f)
         assertEquals(10f, calculateWaveBarHeightDp(0.5f, isRefreshing = false, isDismissing = false), 0.001f)
         assertEquals(16f, calculateWaveBarHeightDp(1.0f, isRefreshing = false, isDismissing = false), 0.001f)
-
+        // Overstretch beyond threshold expands bar height up to 22dp at 1.5 ceiling
+        assertEquals(19f, calculateWaveBarHeightDp(1.25f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(22f, calculateWaveBarHeightDp(1.5f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(22f, calculateWaveBarHeightDp(2.5f, isRefreshing = false, isDismissing = false), 0.001f)
         // Active refresh: held at 16dp
         assertEquals(16f, calculateWaveBarHeightDp(0f, isRefreshing = true, isDismissing = false), 0.001f)
-
         // Dismissal: shrinks to 0dp
         assertEquals(0f, calculateWaveBarHeightDp(1.0f, isRefreshing = true, isDismissing = true), 0.001f)
     }
 
     @Test
-    fun wavyProgressBarClearance_avoidsOverlapWithTopIslandBar() {
-        // Island bar bottom edge is 48dp (8dp padding + 40dp height).
-        // Clearance must be >= 52dp to guarantee zero overlap with three-dots button and user handle.
-        val clearanceWithIsland = calculateWavyBarTopClearanceDp(isTopBarVisible = true)
-        assertTrue(
-            "Wavy bar top clearance ($clearanceWithIsland dp) must exceed island bottom (48 dp)",
-            clearanceWithIsland >= 52f
-        )
+    fun overstretchCoupling_waveAmplitudeAndBarHeightScaleBeyondUnitCeiling() {
+        // At 1.0f (threshold), amplitude is 1.0 and height is 16dp
+        assertEquals(1.0f, calculateWaveAmplitude(1.0f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(16f, calculateWaveBarHeightDp(1.0f, isRefreshing = false, isDismissing = false), 0.001f)
+        // At 1.5f (max overstretch), amplitude scales to 1.5 and height expands to 22dp
+        assertEquals(1.5f, calculateWaveAmplitude(1.5f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(22f, calculateWaveBarHeightDp(1.5f, isRefreshing = false, isDismissing = false), 0.001f)
+        // Upon release to active refresh, amplitude relaxes back to 1.0 and height to 16dp
+        assertEquals(1.0f, calculateWaveAmplitude(1.0f, isRefreshing = true, isDismissing = false), 0.001f)
+        assertEquals(16f, calculateWaveBarHeightDp(1.0f, isRefreshing = true, isDismissing = false), 0.001f)
+    }
 
-        // When scrolled and island hides, clearance collapses to 4dp directly beneath status bar
+    @Test
+    fun wavyProgressBarClearance_avoidsOverlapWithTopIslandBar() {
+        val clearanceWithIsland = calculateWavyBarTopClearanceDp(isTopBarVisible = true)
+        assertTrue("Wavy bar top clearance ($clearanceWithIsland dp) must exceed island bottom (48 dp)", clearanceWithIsland >= 52f)
         val clearanceScrolled = calculateWavyBarTopClearanceDp(isTopBarVisible = false)
         assertEquals(4f, clearanceScrolled, 0.001f)
     }
