@@ -129,7 +129,7 @@ fun PullToRefreshScaffold(
     val topBarClearance by animateDpAsState(
         targetValue = if (isTopBarVisible) 52.dp else 4.dp,
         animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
+            dampingRatio = Spring.DampingRatioNoBouncy,
             stiffness = Spring.StiffnessMediumLow
         ),
         label = "wavyBarTopClearance"
@@ -179,7 +179,7 @@ fun PullToRefreshScaffold(
             content()
         }
 
-        // Expressive Indeterminate Wavy Progress Bar docked at top
+        // Expressive Full-Width Continuous Wavy Progress Bar docked at top
         AnimatedVisibility(
             visible = activelyRefreshing && !isDismissingAfterRefresh,
             enter = fadeIn(animationSpec = tween(durationMillis = 150)) + expandVertically(
@@ -197,15 +197,22 @@ fun PullToRefreshScaffold(
             modifier = Modifier
                 .fillMaxWidth()
                 .statusBarsPadding()
-                .padding(top = topBarClearance, start = 8.dp, end = 8.dp)
+                .padding(top = topBarClearance.coerceAtLeast(0.dp), start = 8.dp, end = 8.dp)
                 .align(Alignment.TopCenter)
         ) {
             LinearWavyProgressIndicator(
+                progress = { 1f },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(10.dp),
+                    .padding(horizontal = 24.dp)
+                    .height(16.dp),
                 color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+                trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                amplitude = { 1f },
+                wavelength = 28.dp,
+                waveSpeed = 16.dp,
+                stopSize = 0.dp,
+                gapSize = 0.dp
             )
         }
     }
