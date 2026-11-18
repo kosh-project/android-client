@@ -1,21 +1,27 @@
 package project.kosh.feature.gallery.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -28,7 +34,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.tooling.preview.Preview
@@ -38,30 +43,33 @@ import kotlinx.coroutines.launch
 
 /**
  * Spring-based pull-to-refresh layout wrapper providing overstretch dynamics,
- * elastic scale relaxation, and floating loading indicator clearance.
+ * elastic scale relaxation, and an indeterminate Material 3 Expressive wavy progress indicator.
  *
  * ### Architectural Guarantees
- * 1. **Content Clearance:** Downward content translation strictly exceeds indicator bottom
- *    displacement at every pull fraction (tested in GalleryPullToRefreshTest), preventing
- *    occlusion of the first grid row.
- * 2. **Elastic Scale Relaxation:** Media tiles stretch vertically up to 1.06x during gesture
+ * 1. **Silent Pull Phase:** The wavy indicator remains dormant during pull-down gestures,
+ *    allowing elastic overstretch without visual clutter.
+ * 2. **Expressive Wavy Loading:** Triggers sinusoidal indeterminate motion via [LinearWavyProgressIndicator]
+ *    only when the user releases past the refresh threshold.
+ * 3. **Island Bar Clearance:** Automatically offsets downward when [isTopBarVisible] is true,
+ *    preventing visual collision with the floating passkey identity pill and three-dot action button.
+ * 4. **Elastic Scale Relaxation:** Media tiles stretch vertically up to 1.06x during gesture
  *    pull, relaxing back to 1.0x when the refresh threshold triggers or dismisses.
- * 3. **Flicker Elimination:** Maintains indeterminate spinner mode throughout active refresh
- *    and dismiss collapse to prevent reverting to determinate arc during exit.
- * 4. **Minimum Display Duration:** Enforces a minimum 2000ms duration so network operations
+ * 5. **Minimum Display Duration:** Enforces a minimum 2000ms duration so network operations
  *    do not cause visual flashes.
  *
  * @param isRefreshing Whether a background data sync is actively executing.
  * @param onRefresh Invoked when the user pulls past the threshold to request a fresh sync.
  * @param modifier Composable modifier applied to the root container.
+ * @param isTopBarVisible Whether the floating top island bar is currently visible.
  * @param content The scrollable content hierarchy (such as a LazyVerticalGrid) to enclose.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun PullToRefreshScaffold(
     isRefreshing: Boolean,
     onRefresh: () -> Unit,
     modifier: Modifier = Modifier,
+    isTopBarVisible: Boolean = true,
     content: @Composable () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -118,31 +126,13 @@ fun PullToRefreshScaffold(
     )
     val overstretchScaleY = 1f + (overstretchProgress * 0.06f * animatedScaleRelaxation)
 
-    val indicatorAlpha by animateFloatAsState(
-        targetValue = when {
-            activelyRefreshing -> 1f
-            isDismissingAfterRefresh -> 0f
-            pullToRefreshState.isAnimating -> 0f
-            overstretchProgress > 0.05f -> (overstretchProgress * 2.5f).coerceIn(0f, 1f)
-            else -> 0f
-        },
-        animationSpec = tween(durationMillis = 250),
-        label = "pullIndicatorAlpha"
-    )
-
-    val indicatorScale by animateFloatAsState(
-        targetValue = when {
-            activelyRefreshing -> 1f
-            isDismissingAfterRefresh -> 0.8f
-            pullToRefreshState.isAnimating -> 0.8f
-            overstretchProgress > 0.05f -> (0.6f + overstretchProgress * 0.4f).coerceIn(0.6f, 1f)
-            else -> 0.6f
-        },
+    val topBarClearance by animateDpAsState(
+        targetValue = if (isTopBarVisible) 52.dp else 4.dp,
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioMediumBouncy,
             stiffness = Spring.StiffnessMediumLow
         ),
-        label = "pullIndicatorScale"
+        label = "wavyBarTopClearance"
     )
 
     val executeRefresh: () -> Unit = {
@@ -176,41 +166,6 @@ fun PullToRefreshScaffold(
             .background(MaterialTheme.colorScheme.background),
         indicator = {}
     ) {
-        // Floating Loading Indicator Container
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .height(overstretchY)
-                .align(Alignment.TopCenter)
-                .graphicsLayer {
-                    alpha = indicatorAlpha
-                    scaleX = indicatorScale
-                    scaleY = indicatorScale
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            if (activelyRefreshing || isDismissingAfterRefresh) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(32.dp),
-                    strokeWidth = 3.5.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    strokeCap = StrokeCap.Round
-                )
-            } else if (overstretchProgress > 0.05f) {
-                val pullProgress = (overstretchProgress / 1.0f).coerceIn(0f, 1f)
-                CircularProgressIndicator(
-                    progress = { pullProgress },
-                    modifier = Modifier.size(32.dp),
-                    strokeWidth = 3.5.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                    trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                    strokeCap = StrokeCap.Round
-                )
-            }
-        }
-
         // Overstretched Content Surface with Y displacement and elastic scale
         Box(
             modifier = Modifier
@@ -222,6 +177,36 @@ fun PullToRefreshScaffold(
                 }
         ) {
             content()
+        }
+
+        // Expressive Indeterminate Wavy Progress Bar docked at top
+        AnimatedVisibility(
+            visible = activelyRefreshing && !isDismissingAfterRefresh,
+            enter = fadeIn(animationSpec = tween(durationMillis = 150)) + expandVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ),
+            exit = fadeOut(animationSpec = tween(durationMillis = 200)) + shrinkVertically(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(top = topBarClearance, start = 8.dp, end = 8.dp)
+                .align(Alignment.TopCenter)
+        ) {
+            LinearWavyProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(10.dp),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+            )
         }
     }
 }

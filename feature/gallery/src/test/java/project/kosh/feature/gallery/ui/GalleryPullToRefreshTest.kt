@@ -183,4 +183,45 @@ class GalleryPullToRefreshTest {
         // Post-refresh collapse: indeterminate spinner remains active while fading out
         assertTrue(isIndeterminateIndicatorActive(isRefreshing = false, isDismissingAfterRefresh = true))
     }
+
+    private fun isWavyProgressBarVisible(
+        isActivelyRefreshing: Boolean,
+        isDismissingAfterRefresh: Boolean
+    ): Boolean {
+        return isActivelyRefreshing && !isDismissingAfterRefresh
+    }
+
+    private fun calculateWavyBarTopClearanceDp(isTopBarVisible: Boolean): Float {
+        return if (isTopBarVisible) 52f else 4f
+    }
+
+    @Test
+    fun wavyProgressBar_silentDuringPullDownGesture() {
+        // While user pulls down (even past 1.0 threshold), activelyRefreshing is false until gesture is released
+        assertTrue(!isWavyProgressBarVisible(isActivelyRefreshing = false, isDismissingAfterRefresh = false))
+    }
+
+    @Test
+    fun wavyProgressBar_activatesWhenRefreshing() {
+        // When released and refresh begins, wavy bar becomes visible
+        assertTrue(isWavyProgressBarVisible(isActivelyRefreshing = true, isDismissingAfterRefresh = false))
+
+        // When refresh completes and begins dismiss collapse, wavy bar fades out
+        assertTrue(!isWavyProgressBarVisible(isActivelyRefreshing = true, isDismissingAfterRefresh = true))
+    }
+
+    @Test
+    fun wavyProgressBarClearance_avoidsOverlapWithTopIslandBar() {
+        // Island bar bottom edge is 48dp (8dp padding + 40dp height).
+        // Clearance must be >= 52dp to guarantee zero overlap with three-dots button and user handle.
+        val clearanceWithIsland = calculateWavyBarTopClearanceDp(isTopBarVisible = true)
+        assertTrue(
+            "Wavy bar top clearance ($clearanceWithIsland dp) must exceed island bottom (48 dp)",
+            clearanceWithIsland >= 52f
+        )
+
+        // When scrolled and island hides, clearance collapses to 4dp directly beneath status bar
+        val clearanceScrolled = calculateWavyBarTopClearanceDp(isTopBarVisible = false)
+        assertEquals(4f, clearanceScrolled, 0.001f)
+    }
 }

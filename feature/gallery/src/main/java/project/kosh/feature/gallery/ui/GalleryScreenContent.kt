@@ -124,7 +124,8 @@ fun GalleryScreenContent(
         ) {
             PullToRefreshScaffold(
                 isRefreshing = isSyncing,
-                onRefresh = onRefreshSync
+                onRefresh = onRefreshSync,
+                isTopBarVisible = isIslandVisible
             ) {
                 if (groupedGalleryItems.isEmpty() && !isBatchUploading) {
                     EmptyVaultView(
