@@ -1,17 +1,14 @@
 package project.kosh.feature.gallery.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.VectorConverter
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -46,16 +43,16 @@ import kotlinx.coroutines.launch
  * elastic scale relaxation, and an indeterminate Material 3 Expressive wavy progress indicator.
  *
  * ### Architectural Guarantees
- * 1. **Silent Pull Phase:** The wavy indicator remains dormant during pull-down gestures,
- *    allowing elastic overstretch without visual clutter.
- * 2. **Expressive Wavy Loading:** Triggers sinusoidal indeterminate motion via [LinearWavyProgressIndicator]
- *    only when the user releases past the refresh threshold.
- * 3. **Island Bar Clearance:** Automatically offsets downward when [isTopBarVisible] is true,
+ * 1. **Kinetic Wave Blooming:** Wave amplitude scales dynamically with pull stretch from 0.0f
+ *    (flat hairline) up to 1.0f (full expressive wave) at threshold, tracking 1:1 with finger motion.
+ * 2. **Elastic Box Height Coupling:** The indicator canvas bounds expand from 4dp to 16dp
+ *    proportional to wave amplitude during pull-down, collapsing back to 0dp upon dismissal.
+ * 3. **Persistent Host Resolution:** Remains active and visible for as long as background
+ *    sync / network host discovery executes, avoiding premature dismissal when the server is offline.
+ * 4. **Dismissal Flattening & Shrink:** Animates amplitude back down to 0.0f and height to 0dp
+ *    during dismissal collapse.
+ * 5. **Island Bar Clearance:** Automatically offsets downward when [isTopBarVisible] is true,
  *    preventing visual collision with the floating passkey identity pill and three-dot action button.
- * 4. **Elastic Scale Relaxation:** Media tiles stretch vertically up to 1.06x during gesture
- *    pull, relaxing back to 1.0x when the refresh threshold triggers or dismisses.
- * 5. **Minimum Display Duration:** Enforces a minimum 2000ms duration so network operations
- *    do not cause visual flashes.
  *
  * @param isRefreshing Whether a background data sync is actively executing.
  * @param onRefresh Invoked when the user pulls past the threshold to request a fresh sync.
@@ -135,6 +132,55 @@ fun PullToRefreshScaffold(
         label = "wavyBarTopClearance"
     )
 
+    // Dynamic wave amplitude and height coupling
+    val pullFraction = (pullToRefreshState.distanceFraction / 1.0f).coerceIn(0f, 1f)
+    val isGesturePulling = pullFraction > 0.01f && !activelyRefreshing && !isDismissingAfterRefresh
+
+    val rawTargetAmplitude = when {
+        isDismissingAfterRefresh -> 0f
+        activelyRefreshing -> 1f
+        isGesturePulling -> pullFraction
+        else -> 0f
+    }
+
+    val animatedAmplitude by animateFloatAsState(
+        targetValue = rawTargetAmplitude,
+        animationSpec = if (isGesturePulling) {
+            snap()
+        } else {
+            tween(durationMillis = 250, easing = FastOutSlowInEasing)
+        },
+        label = "waveAmplitude"
+    )
+
+    val rawTargetHeight = when {
+        isDismissingAfterRefresh -> 0.dp
+        activelyRefreshing -> 16.dp
+        isGesturePulling -> 4.dp + (12.dp * pullFraction)
+        else -> 0.dp
+    }
+
+    val animatedBarHeight by animateDpAsState(
+        targetValue = rawTargetHeight,
+        animationSpec = if (isGesturePulling) {
+            snap()
+        } else {
+            tween(durationMillis = 250, easing = FastOutSlowInEasing)
+        },
+        label = "wavyBarHeight"
+    )
+
+    val animatedAlpha by animateFloatAsState(
+        targetValue = when {
+            isDismissingAfterRefresh -> 0f
+            activelyRefreshing -> 1f
+            isGesturePulling -> (pullFraction * 2.5f).coerceIn(0f, 1f)
+            else -> 0f
+        },
+        animationSpec = tween(durationMillis = 150),
+        label = "wavyBarAlpha"
+    )
+
     val executeRefresh: () -> Unit = {
         coroutineScope.launch {
             try {
@@ -142,14 +188,23 @@ fun PullToRefreshScaffold(
                 isManualRefreshingVisual = true
                 val startTime = System.currentTimeMillis()
                 onRefresh()
+
+                // Stay active as long as background sync / host resolution is executing
+                while (isRefreshing) {
+                    delay(50L)
+                }
+
+                // Minimum aesthetic duration so fast syncs don't flicker
                 val elapsed = System.currentTimeMillis() - startTime
-                val minDisplayMs = 2000L
+                val minDisplayMs = 600L
                 if (elapsed < minDisplayMs) {
                     delay(minDisplayMs - elapsed)
                 }
+
                 isDismissingAfterRefresh = true
                 isManualRefreshingVisual = false
                 pullToRefreshState.animateToHidden()
+                delay(250L) // Allow amplitude -> 0 and height -> 0 shrink animations to finish
             } finally {
                 isDismissingAfterRefresh = false
                 isManualRefreshingVisual = false
@@ -180,40 +235,35 @@ fun PullToRefreshScaffold(
         }
 
         // Expressive Full-Width Continuous Wavy Progress Bar docked at top
-        AnimatedVisibility(
-            visible = activelyRefreshing && !isDismissingAfterRefresh,
-            enter = fadeIn(animationSpec = tween(durationMillis = 150)) + expandVertically(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
-            ),
-            exit = fadeOut(animationSpec = tween(durationMillis = 200)) + shrinkVertically(
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                )
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(top = topBarClearance.coerceAtLeast(0.dp), start = 8.dp, end = 8.dp)
-                .align(Alignment.TopCenter)
-        ) {
-            LinearWavyProgressIndicator(
-                progress = { 1f },
+        val isIndicatorVisible = (isGesturePulling || activelyRefreshing || isDismissingAfterRefresh) &&
+            animatedBarHeight > 0.5.dp && animatedAlpha > 0.01f
+
+        if (isIndicatorVisible) {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp)
-                    .height(16.dp),
-                color = MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
-                amplitude = { 1f },
-                wavelength = 28.dp,
-                waveSpeed = 16.dp,
-                stopSize = 0.dp,
-                gapSize = 0.dp
-            )
+                    .statusBarsPadding()
+                    .padding(top = topBarClearance.coerceAtLeast(0.dp), start = 8.dp, end = 8.dp)
+                    .align(Alignment.TopCenter)
+                    .graphicsLayer {
+                        alpha = animatedAlpha
+                    }
+            ) {
+                LinearWavyProgressIndicator(
+                    progress = { 1f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp)
+                        .height(animatedBarHeight),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f),
+                    amplitude = { animatedAmplitude },
+                    wavelength = 28.dp,
+                    waveSpeed = 16.dp,
+                    stopSize = 0.dp,
+                    gapSize = 0.dp
+                )
+            }
         }
     }
 }

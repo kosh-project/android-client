@@ -1015,7 +1015,8 @@ class GalleryViewModel @Inject constructor(
         }
         val job = viewModelScope.launch(ioDispatcher) {
             try {
-                withTimeoutOrNull(2000L) {
+                // Allow sufficient time for mDNS local discovery or remote OkHttp connect timeout (15s)
+                withTimeoutOrNull(15_000L) {
                     crdtSyncEngine.sync(masterKey, SyncNamespace.GALLERY)
                 }
             } catch (e: Exception) {

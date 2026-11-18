@@ -184,11 +184,30 @@ class GalleryPullToRefreshTest {
         assertTrue(isIndeterminateIndicatorActive(isRefreshing = false, isDismissingAfterRefresh = true))
     }
 
-    private fun isWavyProgressBarVisible(
-        isActivelyRefreshing: Boolean,
-        isDismissingAfterRefresh: Boolean
-    ): Boolean {
-        return isActivelyRefreshing && !isDismissingAfterRefresh
+    private fun calculateWaveAmplitude(
+        pullFraction: Float,
+        isRefreshing: Boolean,
+        isDismissing: Boolean
+    ): Float {
+        return when {
+            isDismissing -> 0f
+            isRefreshing -> 1f
+            pullFraction > 0.01f -> pullFraction.coerceIn(0f, 1f)
+            else -> 0f
+        }
+    }
+
+    private fun calculateWaveBarHeightDp(
+        pullFraction: Float,
+        isRefreshing: Boolean,
+        isDismissing: Boolean
+    ): Float {
+        return when {
+            isDismissing -> 0f
+            isRefreshing -> 16f
+            pullFraction > 0.01f -> 4f + (12f * pullFraction.coerceIn(0f, 1f))
+            else -> 0f
+        }
     }
 
     private fun calculateWavyBarTopClearanceDp(isTopBarVisible: Boolean): Float {
@@ -196,18 +215,44 @@ class GalleryPullToRefreshTest {
     }
 
     @Test
-    fun wavyProgressBar_silentDuringPullDownGesture() {
-        // While user pulls down (even past 1.0 threshold), activelyRefreshing is false until gesture is released
-        assertTrue(!isWavyProgressBarVisible(isActivelyRefreshing = false, isDismissingAfterRefresh = false))
+    fun waveAmplitude_scalesLinearlyFromFlatToMaxDuringPull() {
+        // Idle: amplitude is 0 (flat line)
+        assertEquals(0f, calculateWaveAmplitude(0f, isRefreshing = false, isDismissing = false), 0.001f)
+
+        // Pulling down: amplitude scales linearly with finger stretch
+        assertEquals(0.25f, calculateWaveAmplitude(0.25f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(0.5f, calculateWaveAmplitude(0.5f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(0.75f, calculateWaveAmplitude(0.75f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(1.0f, calculateWaveAmplitude(1.0f, isRefreshing = false, isDismissing = false), 0.001f)
+
+        // Overshoot is clamped to 1.0f
+        assertEquals(1.0f, calculateWaveAmplitude(1.5f, isRefreshing = false, isDismissing = false), 0.001f)
     }
 
     @Test
-    fun wavyProgressBar_activatesWhenRefreshing() {
-        // When released and refresh begins, wavy bar becomes visible
-        assertTrue(isWavyProgressBarVisible(isActivelyRefreshing = true, isDismissingAfterRefresh = false))
+    fun waveAmplitude_holdsAtMaxDuringRefresh_flattensOnDismissal() {
+        // Active refresh: amplitude held at 1.0f
+        assertEquals(1.0f, calculateWaveAmplitude(0f, isRefreshing = true, isDismissing = false), 0.001f)
 
-        // When refresh completes and begins dismiss collapse, wavy bar fades out
-        assertTrue(!isWavyProgressBarVisible(isActivelyRefreshing = true, isDismissingAfterRefresh = true))
+        // Dismissal: amplitude immediately targets 0.0f to flatten into straight line
+        assertEquals(0f, calculateWaveAmplitude(1.0f, isRefreshing = true, isDismissing = true), 0.001f)
+    }
+
+    @Test
+    fun barHeight_bloomsProportionallyWithPull_andShrinksToZeroOnDismissal() {
+        // Idle: 0dp
+        assertEquals(0f, calculateWaveBarHeightDp(0f, isRefreshing = false, isDismissing = false), 0.001f)
+
+        // Pulling down: blooms from 4dp to 16dp
+        assertEquals(4f, calculateWaveBarHeightDp(0.015f, isRefreshing = false, isDismissing = false), 0.2f)
+        assertEquals(10f, calculateWaveBarHeightDp(0.5f, isRefreshing = false, isDismissing = false), 0.001f)
+        assertEquals(16f, calculateWaveBarHeightDp(1.0f, isRefreshing = false, isDismissing = false), 0.001f)
+
+        // Active refresh: held at 16dp
+        assertEquals(16f, calculateWaveBarHeightDp(0f, isRefreshing = true, isDismissing = false), 0.001f)
+
+        // Dismissal: shrinks to 0dp
+        assertEquals(0f, calculateWaveBarHeightDp(1.0f, isRefreshing = true, isDismissing = true), 0.001f)
     }
 
     @Test
