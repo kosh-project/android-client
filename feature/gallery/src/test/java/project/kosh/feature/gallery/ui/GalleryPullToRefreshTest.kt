@@ -79,6 +79,19 @@ class GalleryPullToRefreshTest {
     private fun calculateWavyBarTopClearanceDp(isTopBarVisible: Boolean): Float =
         if (isTopBarVisible) 52f else 4f
 
+    private fun calculateWaveCapInsets(widthPx: Float, strokeWidthPx: Float): Pair<Float, Float> {
+        val capRadius = strokeWidthPx / 2f
+        val startX = capRadius + 1f
+        val endX = (widthPx - capRadius - 1f).coerceAtLeast(startX)
+        return startX to endX
+    }
+
+    private fun calculateHermiteEnvelope(distance: Float, taperDistance: Float): Float {
+        if (taperDistance <= 0f) return 1f
+        val s = (distance / taperDistance).coerceIn(0f, 1f)
+        return s * s * (3f - 2f * s)
+    }
+
     @Test
     fun idleState_hasZeroDisplacementAndUnitScale() {
         assertEquals(0f, calculateIndicatorBottom(0f), 0.001f)
@@ -202,5 +215,30 @@ class GalleryPullToRefreshTest {
         assertTrue("Wavy bar top clearance ($clearanceWithIsland dp) must exceed island bottom (48 dp)", clearanceWithIsland >= 52f)
         val clearanceScrolled = calculateWavyBarTopClearanceDp(isTopBarVisible = false)
         assertEquals(4f, clearanceScrolled, 0.001f)
+    }
+
+    @Test
+    fun waveCapInsets_guaranteeFullSemicircularCapsWithoutViewportClipping() {
+        val widthPx = 800f
+        val strokeWidthPx = 12f
+        val capRadius = strokeWidthPx / 2f
+        val (startX, endX) = calculateWaveCapInsets(widthPx, strokeWidthPx)
+
+        // Left cap starts at startX - capRadius, which must be >= 0 (no clipping on left boundary)
+        assertTrue("Left cap boundary must not be clipped", startX - capRadius >= 0f)
+        // Right cap ends at endX + capRadius, which must be <= widthPx (no clipping on right boundary)
+        assertTrue("Right cap boundary must not be clipped", endX + capRadius <= widthPx)
+    }
+
+    @Test
+    fun hermiteEnvelope_anchorsEndpointsToCenterline_andReachesFullUnitWaveInBody() {
+        val taperDistance = 40f
+        // At endpoint (distance 0), envelope is strictly 0.0f (anchored to centerline)
+        assertEquals(0f, calculateHermiteEnvelope(0f, taperDistance), 0.001f)
+        // Mid-taper rises smoothly
+        assertEquals(0.5f, calculateHermiteEnvelope(20f, taperDistance), 0.001f)
+        // At and beyond taper distance, envelope reaches 1.0f (full expressive wave)
+        assertEquals(1.0f, calculateHermiteEnvelope(40f, taperDistance), 0.001f)
+        assertEquals(1.0f, calculateHermiteEnvelope(100f, taperDistance), 0.001f)
     }
 }

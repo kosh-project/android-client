@@ -7,9 +7,13 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -26,20 +30,22 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import kotlin.math.sin
 
 /**
- * Continuous wavy progress indicator drawn directly on [Canvas] using quadratic Bezier splines.
+ * Continuous wavy progress indicator drawn directly on [Canvas] with anchored rounded ends.
  *
- * Bypasses Material 3 Expressive internal animation job drop mechanism and 1.0f clamping ceiling,
- * delivering rock-solid, deterministic wave amplitude that tracks touch gestures and overstretch
- * scaling up to 1.5x with zero frame drops.
+ * Eliminates viewport clipping artifacts by anchoring both terminal ends to the center baseline
+ * with [StrokeCap.Round], while applying a smooth Hermite envelope taper near the boundaries.
+ * Delivers continuous traveling wave undulation without hard-sliced flat vertical boundaries.
  *
  * ### Architectural Guarantees
- * 1. Zero Frame Allocation: Caches [Stroke] and rewinds [Path] in-place to avoid GC thrashing at 120 FPS.
- * 2. Continuous Phase Propagation: Traveling wave propagates along X axis without phase discontinuities.
- * 3. Proportional Overstretch: Amplitude scales beyond nominal 1.0f lockstep with pull stretch up to 1.5f.
+ * 1. Zero Frame Allocation: Caches [Stroke] and rewinds [Path] in-place to avoid GC at 120 FPS.
+ * 2. Anchored Rounded Ends: Both endpoints terminate on the centerline with full circular caps.
+ * 3. Hermite Envelope Taper: Smoothly ramps wave amplitude near the ends to eliminate edge popping.
+ * 4. Proportional Overstretch: Amplitude scales beyond 1.0f lockstep with gesture stretch up to 1.5f.
  *
- * @param amplitude Dynamic wave amplitude multiplier (0.0f = flat hairline, 1.0f = nominal wave, 1.5f = overstretched wave).
+ * @param amplitude Dynamic wave amplitude multiplier (0.0f = flat hairline, 1.0f = nominal, 1.5f = overstretch).
  * @param modifier Composable modifier applied to the canvas layout bounds.
  * @param color Color used to stroke the active wavy indicator path.
  * @param trackColor Optional background track line color drawn behind flat hairline. Defaults to [Color.Transparent].
@@ -98,52 +104,84 @@ fun ExpressiveWavyProgressBar(
 
         if (width <= 0f || height <= 0f) return@Canvas
 
+        val capRadius = strokeWidthPx / 2f
+        val startX = capRadius + 1f
+        val endX = (width - capRadius - 1f).coerceAtLeast(startX)
+        val usableWidth = endX - startX
+
+        if (usableWidth <= 0f) return@Canvas
+
         val maxAvailableHeightPx = (height - strokeWidthPx).coerceAtLeast(0f)
 
-        // When amplitude is flat or bounds too short for crests, render flat hairline
+        // When amplitude is flat or bounds too short for crests, render anchored flat hairline
         if (amplitude <= 0.001f || height <= strokeWidthPx || wavelengthPx <= 0f) {
             if (trackColor != Color.Transparent && trackColor.alpha > 0.01f) {
                 drawLine(
                     color = trackColor,
-                    start = Offset(0f, centerY),
-                    end = Offset(width, centerY),
+                    start = Offset(startX, centerY),
+                    end = Offset(endX, centerY),
                     strokeWidth = strokeWidthPx,
                     cap = StrokeCap.Round
                 )
             }
             drawLine(
                 color = color,
-                start = Offset(0f, centerY),
-                end = Offset(width, centerY),
+                start = Offset(startX, centerY),
+                end = Offset(endX, centerY),
                 strokeWidth = strokeWidthPx,
                 cap = StrokeCap.Round
             )
             return@Canvas
         }
 
-        // Peak control point displacement scaled dynamically with amplitude
-        val peakControlOffset = (baseAvailableHeightPx * amplitude).coerceAtMost(maxAvailableHeightPx)
+        val maxDisplacementPx = maxAvailableHeightPx / 2f
+        val targetDisplacementPx = (baseAvailableHeightPx / 2f) * amplitude
+        val peakDisplacementPx = targetDisplacementPx.coerceAtMost(maxDisplacementPx)
 
-        val halfWavelength = wavelengthPx / 2f
         val rawShift = wavePhase * wavelengthPx
         val waveShift = if (isLtr) rawShift else -rawShift
-        val normalizedShift = ((waveShift % wavelengthPx) + wavelengthPx) % wavelengthPx
+        val k = (2.0 * Math.PI / wavelengthPx).toFloat()
+        val phaseRad = (2.0 * Math.PI * (waveShift / wavelengthPx)).toFloat()
+
+        // Taper zone over half wavelength to anchor ends smoothly at (startX, centerY) and (endX, centerY)
+        val taperDistance = (wavelengthPx / 2f).coerceAtMost(usableWidth / 2f)
+        val stepPx = with(density) { 2.dp.toPx() }.coerceAtLeast(1f)
 
         wavePath.rewind()
-
-        val startX = -2f * wavelengthPx + normalizedShift
         wavePath.moveTo(startX, centerY)
 
         var currentX = startX
-        var isCrest = true
+        while (currentX < endX) {
+            val distanceFromStart = currentX - startX
+            val distanceFromEnd = endX - currentX
+            val envelope = when {
+                taperDistance <= 0f -> 1f
+                distanceFromStart < taperDistance -> {
+                    val s = distanceFromStart / taperDistance
+                    (s * s * (3f - 2f * s)).coerceIn(0f, 1f)
+                }
+                distanceFromEnd < taperDistance -> {
+                    val s = distanceFromEnd / taperDistance
+                    (s * s * (3f - 2f * s)).coerceIn(0f, 1f)
+                }
+                else -> 1f
+            }
 
-        while (currentX < width + wavelengthPx) {
-            val controlX = currentX + halfWavelength / 2f
-            val controlY = if (isCrest) centerY - peakControlOffset else centerY + peakControlOffset
-            val targetX = currentX + halfWavelength
-            wavePath.quadraticTo(controlX, controlY, targetX, centerY)
-            currentX = targetX
-            isCrest = !isCrest
+            val y = centerY - (peakDisplacementPx * envelope * sin(k * (currentX - startX) - phaseRad))
+            wavePath.lineTo(currentX, y)
+            currentX += stepPx
+        }
+
+        wavePath.lineTo(endX, centerY)
+
+        if (trackColor != Color.Transparent && trackColor.alpha > 0.01f) {
+            drawLine(
+                color = trackColor,
+                start = Offset(startX, centerY),
+                end = Offset(endX, centerY),
+                strokeWidth = strokeWidthPx,
+                cap = StrokeCap.Round
+            )
         }
 
         drawPath(
@@ -154,15 +192,29 @@ fun ExpressiveWavyProgressBar(
     }
 }
 
-@Preview(name = "Expressive Wavy Progress Bar Preview", showBackground = true)
+@Preview(name = "Expressive Wavy Progress Bar States Preview", showBackground = true)
 @Composable
 private fun ExpressiveWavyProgressBarPreview() {
     GalleryPreviewTheme {
-        ExpressiveWavyProgressBar(
-            amplitude = 1.0f,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(16.dp)
-        )
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(text = "Flat Hairline (Amplitude 0.0)", style = MaterialTheme.typography.labelSmall)
+            ExpressiveWavyProgressBar(
+                amplitude = 0.0f,
+                modifier = Modifier.fillMaxWidth().height(16.dp)
+            )
+            Text(text = "Nominal Wave (Amplitude 1.0)", style = MaterialTheme.typography.labelSmall)
+            ExpressiveWavyProgressBar(
+                amplitude = 1.0f,
+                modifier = Modifier.fillMaxWidth().height(16.dp)
+            )
+            Text(text = "Overstretched Wave (Amplitude 1.5)", style = MaterialTheme.typography.labelSmall)
+            ExpressiveWavyProgressBar(
+                amplitude = 1.5f,
+                modifier = Modifier.fillMaxWidth().height(22.dp)
+            )
+        }
     }
 }
